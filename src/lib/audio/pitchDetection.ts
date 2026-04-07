@@ -248,8 +248,8 @@ export class PitchDetector {
       this.runMLChordDetection();
     }
 
-    // Clear ML results after 2.5s with no update (true silence)
-    if (this._mlMidis.length > 0 && now - this._mlLastUpdate > 2500) {
+    // Clear ML results after 1.5s with no update (true silence)
+    if (this._mlMidis.length > 0 && now - this._mlLastUpdate > 1500) {
       this._mlMidis = [];
       this._mlChroma = new Array(12).fill(0);
     }

@@ -56,8 +56,12 @@ export default function ListenPage() {
   const chordHoldUntil = useRef(0);
   const lastFlush = useRef(0);
 
-  // Note history for intervals (stored in ref to avoid state churn)
-  const noteHistory = useRef<{ midi: number; time: number }[]>([]);
+  // Interval two-note state machine
+  // state: 'waiting_first' | 'waiting_second' | 'showing'
+  const intervalState = useRef<'waiting_first' | 'waiting_second' | 'showing'>('waiting_first');
+  const intervalFirstMidi = useRef<number | null>(null);
+  const intervalShowUntil = useRef(0);    // when 'showing' expires → reset
+  const intervalLastNoteTime = useRef(0); // for silence-based reset
 
   // Smoothed chroma (exponential moving average)
   const smoothChroma = useRef<number[]>(new Array(12).fill(0));
@@ -65,7 +69,7 @@ export default function ListenPage() {
   // ML chord results (from PitchDetector.getChroma)
   const lastMLChord = useRef<{ midis: number[]; time: number }>({ midis: [], time: 0 });
 
-  const HOLD_MS = 800;      // Keep detected values visible for 800ms minimum
+  const HOLD_MS = 400;      // Keep detected values visible for 400ms minimum
   const FLUSH_MS = 120;     // Only update React state every 120ms
   const SMOOTH_FACTOR = 0.3; // Chroma smoothing (0 = full smooth, 1 = no smooth)
 
@@ -91,27 +95,55 @@ export default function ListenPage() {
       d.midi = pitch.midi;
       noteHoldUntil.current = now + HOLD_MS;
 
-      // Interval tracking
-      const hist = noteHistory.current;
-      const lastEntry = hist[hist.length - 1];
-      if (!lastEntry || pitch.midi !== lastEntry.midi || now - lastEntry.time > 400) {
-        hist.push({ midi: pitch.midi, time: now });
-        if (hist.length > 5) hist.shift();
-      }
-      const recent = hist.filter(h => now - h.time < 5000);
-      if (recent.length >= 2) {
-        const prev = recent[recent.length - 2];
-        const curr = recent[recent.length - 1];
-        const semitones = Math.abs(curr.midi - prev.midi);
-        if (semitones > 0 && semitones <= 12) {
-          d.hasInterval = true;
-          d.intervalName = getIntervalName(semitones);
-          d.intervalFrom = midiToNoteName(prev.midi);
-          d.intervalTo = midiToNoteName(curr.midi);
+      // Interval two-note state machine
+      intervalLastNoteTime.current = now;
+      const iState = intervalState.current;
+      if (iState === 'waiting_first') {
+        // Store the first note and advance state
+        intervalFirstMidi.current = pitch.midi;
+        intervalState.current = 'waiting_second';
+      } else if (iState === 'waiting_second') {
+        const firstMidi = intervalFirstMidi.current!;
+        if (pitch.midi !== firstMidi) {
+          // Second note is different — calculate and show interval
+          const semitones = Math.abs(pitch.midi - firstMidi);
+          if (semitones > 0 && semitones <= 24) {
+            d.hasInterval = true;
+            d.intervalName = getIntervalName(Math.min(semitones, 12));
+            d.intervalFrom = midiToNoteName(firstMidi);
+            d.intervalTo = midiToNoteName(pitch.midi);
+          }
+          intervalShowUntil.current = now + 2000;
+          intervalState.current = 'showing';
         }
+        // If same note held down, stay in waiting_second
       }
+      // In 'showing' state, keep displaying the interval (handled below)
     } else if (now > noteHoldUntil.current) {
       d.hasNote = false;
+    }
+
+    // ── Interval state machine: expiry and silence reset ──
+    if (intervalState.current === 'showing') {
+      if (now >= intervalShowUntil.current) {
+        // Display time elapsed — reset to waiting for first note
+        intervalState.current = 'waiting_first';
+        intervalFirstMidi.current = null;
+        d.hasInterval = false;
+      } else {
+        // Keep showing until timer expires
+        d.hasInterval = true;
+      }
+    } else {
+      d.hasInterval = false;
+      // Silence for >1.5s during waiting_second resets to waiting_first
+      if (
+        intervalState.current === 'waiting_second' &&
+        now - intervalLastNoteTime.current > 1500
+      ) {
+        intervalState.current = 'waiting_first';
+        intervalFirstMidi.current = null;
+      }
     }
 
     // ── Chord: Basic Pitch ML (polyphonic, ~1s latency) ──
@@ -133,7 +165,7 @@ export default function ListenPage() {
         d.chordLabel = formatChord(chord);
         d.chordFull = formatChordFull(chord);
         d.chordNotes = mlResult.activeMidis.sort((a, b) => a - b).map(m => midiToNoteName(m)).join(' - ');
-        chordHoldUntil.current = now + 1500; // Hold chord longer (ML updates slowly)
+        chordHoldUntil.current = now + 800; // Hold chord longer (ML updates slowly)
       }
     } else if (mlResult.activeMidis.length === 1) {
       // ML detected single note — show on keyboard
@@ -180,7 +212,10 @@ export default function ListenPage() {
       setIsListening(true);
       displayRef.current = emptyDisplay();
       smoothChroma.current = new Array(12).fill(0);
-      noteHistory.current = [];
+      intervalState.current = 'waiting_first';
+      intervalFirstMidi.current = null;
+      intervalShowUntil.current = 0;
+      intervalLastNoteTime.current = 0;
       rafRef.current = requestAnimationFrame(analyze);
     } catch (err) {
       setConnecting(false);

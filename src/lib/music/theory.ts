@@ -10,6 +10,10 @@ export type NoteNameFlat = typeof NOTE_NAMES_FLAT[number];
 export const A4_FREQ = 440;
 export const A4_MIDI = 69;
 
+// Some keyboards label middle C (MIDI 60) as C3 instead of C4.
+// Apply this offset to the displayed octave number to match the user's keyboard.
+export const OCTAVE_DISPLAY_OFFSET = -1;
+
 // Convert MIDI note number to frequency
 export function midiToFreq(midi: number): number {
   return A4_FREQ * Math.pow(2, (midi - A4_MIDI) / 12);
@@ -28,7 +32,7 @@ export function freqToNearestMidi(freq: number): number {
 // Convert MIDI note to note name + octave
 export function midiToNoteName(midi: number): string {
   const noteIndex = ((midi % 12) + 12) % 12;
-  const octave = Math.floor(midi / 12) - 1;
+  const octave = Math.floor(midi / 12) - 1 + OCTAVE_DISPLAY_OFFSET;
   return `${NOTE_NAMES[noteIndex]}${octave}`;
 }
 
