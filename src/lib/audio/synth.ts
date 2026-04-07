@@ -348,48 +348,41 @@ export function playMetronomeBeat(level: BeatLevel, sound: MetronomeSound = 'cli
       break;
     }
     case 'wood': {
-      // Band-pass filtered noise burst for wood block
+      // Resonant sine burst — short, woody thock
       const osc = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
       const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(level === 2 ? 3200 : 2400, now);
-      filter.Q.setValueAtTime(15, now);
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(level === 2 ? 800 : 600, now);
-      osc2.type = 'square';
-      osc2.frequency.setValueAtTime(level === 2 ? 1600 : 1200, now);
-      gain.gain.setValueAtTime(vol, now);
+      osc.type = 'sine';
+      const freq = level === 2 ? 540 : 440;
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.6, now + 0.03);
+      gain.gain.setValueAtTime(vol * 1.2, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
-      osc.connect(filter);
-      osc2.connect(filter);
-      filter.connect(gain);
+      osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(now);
-      osc2.start(now);
       osc.stop(now + 0.05);
-      osc2.stop(now + 0.05);
       break;
     }
     case 'hihat': {
-      // Multiple detuned square waves for metallic sound
-      const gain = ctx.createGain();
+      // White noise burst through high-pass filter
+      const bufferSize = ctx.sampleRate * 0.05;
+      const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuffer;
       const filter = ctx.createBiquadFilter();
       filter.type = 'highpass';
-      filter.frequency.setValueAtTime(level === 2 ? 8000 : 7000, now);
-      gain.gain.setValueAtTime(vol * 0.6, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + (level === 2 ? 0.08 : 0.05));
+      filter.frequency.setValueAtTime(level === 2 ? 9000 : 7500, now);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(vol * 0.7, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + (level === 2 ? 0.07 : 0.04));
+      noise.connect(filter);
       filter.connect(gain);
       gain.connect(ctx.destination);
-      [1047, 1109, 1175, 1245, 1319].forEach(f => {
-        const osc = ctx.createOscillator();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(f * (level === 2 ? 1.2 : 1), now);
-        osc.connect(filter);
-        osc.start(now);
-        osc.stop(now + 0.1);
-      });
+      noise.start(now);
       break;
     }
     case 'beep': {

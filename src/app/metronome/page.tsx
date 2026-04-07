@@ -104,9 +104,19 @@ export default function MetronomePage() {
     }, ms);
   }, [tick]);
 
-  // Restart interval when BPM changes while playing
+  // Restart interval when BPM changes while playing (debounced to avoid rapid restarts during dial drag)
+  const restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (playing) restartMetronome();
+    if (!playing) return;
+    // Don't restart immediately — just update the interval timing
+    if (restartTimer.current) clearTimeout(restartTimer.current);
+    restartTimer.current = setTimeout(() => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      const ms = (60 / bpmRef.current) * 1000;
+      intervalRef.current = setInterval(() => {
+        tick();
+      }, ms);
+    }, 150);
   }, [bpm]);
 
   useEffect(() => {
