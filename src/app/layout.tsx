@@ -11,13 +11,13 @@ const pixelFont = Press_Start_2P({
 });
 
 export const metadata: Metadata = {
-  title: "Piano Buddy",
+  title: "Piano Bud",
   description: "Your retro piano learning companion",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Piano Buddy",
+    title: "Piano Bud",
   },
 };
 

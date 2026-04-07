@@ -29,24 +29,38 @@ export class PitchDetector {
   private frequencyBuffer: Float32Array<ArrayBuffer> | null = null;
   private running = false;
 
-  // Lazy init - must be called from user gesture on mobile
-  private gainNode: GainNode | null = null;
-
   private init(): void {
     if (this.audioCtx) return;
     this.audioCtx = new AudioContext();
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = FFT_SIZE;
-    this.analyser.smoothingTimeConstant = 0.75;
+    this.analyser.smoothingTimeConstant = 0.8;
     this.analyser.minDecibels = -90;
     this.analyser.maxDecibels = -10;
-    // Boost input gain for quiet sources (phone mic picking up piano across the room)
-    this.gainNode = this.audioCtx.createGain();
-    this.gainNode.gain.value = 4.0; // 4x boost
-    this.gainNode.connect(this.analyser);
+
+    // Use a compressor to normalize levels without clipping
+    // This boosts quiet signals and tames loud ones
+    const compressor = this.audioCtx.createDynamicsCompressor();
+    compressor.threshold.value = -40;  // Start compressing at -40dB
+    compressor.knee.value = 20;
+    compressor.ratio.value = 8;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.1;
+
+    // Gentle makeup gain (NOT 4x — that caused clipping)
+    const gain = this.audioCtx.createGain();
+    gain.gain.value = 1.5;
+
+    // Chain: source → compressor → gain → analyser
+    compressor.connect(gain);
+    gain.connect(this.analyser);
+    this._inputNode = compressor;
+
     this.timeDomainBuffer = new Float32Array(FFT_SIZE);
     this.frequencyBuffer = new Float32Array(this.analyser.frequencyBinCount);
   }
+
+  private _inputNode: AudioNode | null = null;
 
   async start(): Promise<void> {
     if (this.running) return;
@@ -61,7 +75,7 @@ export class PitchDetector {
         },
       });
       this.source = this.audioCtx!.createMediaStreamSource(this.stream);
-      this.source.connect(this.gainNode!);
+      this.source.connect(this._inputNode!);
       if (this.audioCtx!.state === 'suspended') {
         await this.audioCtx!.resume();
       }
@@ -107,7 +121,7 @@ export class PitchDetector {
 
     // Check if there's enough signal
     const rms = this.getRMS();
-    if (rms < 0.003) return null; // Lower threshold for better sensitivity
+    if (rms < 0.005) return null;
 
     const sampleRate = this.audioCtx!.sampleRate;
     const buf = this.timeDomainBuffer;
@@ -131,7 +145,7 @@ export class PitchDetector {
 
     // Find the first peak above threshold
     let bestTau = -1;
-    let bestVal = 0.2; // lower threshold for better sensitivity
+    let bestVal = 0.35; // require decent confidence to avoid noise
     let rising = false;
 
     for (let tau = minPeriod; tau <= maxPeriod; tau++) {

@@ -25,7 +25,7 @@ export default function Home() {
           PIANO
         </h1>
         <h1 className="text-3xl text-pink glow-text mb-4" style={{ fontFamily: 'var(--font-pixel)' }}>
-          BUDDY
+          BUD
         </h1>
         <p className="text-[8px] text-cream-dim animate-pulse-glow" style={{ fontFamily: 'var(--font-pixel)' }}>
           ♪ PRESS START ♪

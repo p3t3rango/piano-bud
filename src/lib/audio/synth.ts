@@ -49,18 +49,14 @@ interface InstrumentConfig {
   filterFreq?: number;
 }
 
+// Piano uses a dedicated synthesis function — not the generic config
 const INSTRUMENT_CONFIGS: Record<Instrument, InstrumentConfig> = {
   piano: {
-    wave: 'triangle',
-    attack: 0.005,
-    decay: 0.3,
-    sustain: 0.2,
-    release: 0.4,
-    harmonics: [
-      { ratio: 2, gain: 0.4, wave: 'sine' },
-      { ratio: 3, gain: 0.15, wave: 'sine' },
-      { ratio: 4, gain: 0.08, wave: 'sine' },
-    ],
+    wave: 'sine', // placeholder — overridden by playPianoNote
+    attack: 0.003,
+    decay: 0.8,
+    sustain: 0.1,
+    release: 0.5,
   },
   retro: {
     wave: 'triangle',
@@ -102,6 +98,75 @@ interface NoteOptions {
   volume?: number;
 }
 
+// Realistic piano note using additive synthesis with natural harmonic series
+function playPianoNote(midi: number, duration: number, volume: number): void {
+  const ctx = getAudioContext();
+  const freq = midiToFreq(midi);
+  const now = ctx.currentTime;
+
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(volume, now);
+  master.connect(ctx.destination);
+
+  // Piano harmonic amplitudes (based on real piano spectral analysis)
+  // Higher harmonics decay faster, giving the characteristic piano brightness at attack
+  const harmonics = [
+    { ratio: 1,   amp: 1.0,   decay: duration * 0.95 },
+    { ratio: 2,   amp: 0.55,  decay: duration * 0.8 },
+    { ratio: 3,   amp: 0.3,   decay: duration * 0.65 },
+    { ratio: 4,   amp: 0.18,  decay: duration * 0.5 },
+    { ratio: 5,   amp: 0.12,  decay: duration * 0.4 },
+    { ratio: 6,   amp: 0.08,  decay: duration * 0.35 },
+    { ratio: 7,   amp: 0.04,  decay: duration * 0.3 },
+    { ratio: 8,   amp: 0.02,  decay: duration * 0.25 },
+  ];
+
+  for (const h of harmonics) {
+    const hFreq = freq * h.ratio;
+    if (hFreq > 16000) continue; // Skip inaudible harmonics
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    // Slight inharmonicity — real piano strings are slightly sharp at upper partials
+    const inharmonicity = 1 + 0.0002 * h.ratio * h.ratio;
+    osc.frequency.setValueAtTime(hFreq * inharmonicity, now);
+
+    const amp = h.amp * volume;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(amp, now + 0.003); // Very fast attack
+    // Two-stage decay: fast initial drop then slow sustain (like real piano)
+    gain.gain.setTargetAtTime(amp * 0.3, now + 0.003, h.decay * 0.3);
+    gain.gain.setTargetAtTime(0.001, now + h.decay * 0.4, h.decay * 0.5);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(now);
+    osc.stop(now + duration + 0.1);
+  }
+
+  // Hammer noise transient — the percussive "thunk" of a real piano
+  const noiseLen = 0.02;
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * noiseLen, ctx.sampleRate);
+  const noiseData = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseData.length; i++) {
+    noiseData[i] = (Math.random() * 2 - 1) * (1 - i / noiseData.length);
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuf;
+  const noiseFilter = ctx.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.setValueAtTime(freq * 4, now);
+  noiseFilter.Q.setValueAtTime(2, now);
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(volume * 0.15, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + noiseLen);
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(master);
+  noise.start(now);
+}
+
 export function playNote(opts: NoteOptions): void {
   const ctx = getAudioContext();
   const {
@@ -111,11 +176,16 @@ export function playNote(opts: NoteOptions): void {
     volume = 0.3,
   } = opts;
 
+  // Piano uses dedicated synthesis
+  if (instrument === 'piano') {
+    playPianoNote(midi, duration, volume);
+    return;
+  }
+
   const config = INSTRUMENT_CONFIGS[instrument];
   const freq = midiToFreq(midi);
   const now = ctx.currentTime;
 
-  const masterGain = ctx.createGain();
   let destination: AudioNode = ctx.destination;
 
   // Optional low-pass filter for warm sounds
@@ -128,9 +198,6 @@ export function playNote(opts: NoteOptions): void {
     destination = filter;
   }
 
-  masterGain.connect(destination);
-
-  // Main oscillator
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.type = config.wave;
@@ -145,30 +212,9 @@ export function playNote(opts: NoteOptions): void {
   gain.gain.linearRampToValueAtTime(0, now + duration);
 
   osc.connect(gain);
-  gain.connect(masterGain);
+  gain.connect(destination);
   osc.start(now);
   osc.stop(now + duration + 0.05);
-
-  // Harmonics for richer sound (piano)
-  if (config.harmonics) {
-    for (const h of config.harmonics) {
-      const hOsc = ctx.createOscillator();
-      const hGain = ctx.createGain();
-      hOsc.type = h.wave;
-      hOsc.frequency.setValueAtTime(freq * h.ratio, now);
-
-      const hVol = volume * h.gain;
-      hGain.gain.setValueAtTime(0, now);
-      hGain.gain.linearRampToValueAtTime(hVol, now + config.attack);
-      // Harmonics decay faster
-      hGain.gain.exponentialRampToValueAtTime(0.001, now + duration * 0.7);
-
-      hOsc.connect(hGain);
-      hGain.connect(masterGain);
-      hOsc.start(now);
-      hOsc.stop(now + duration + 0.05);
-    }
-  }
 }
 
 // Play a chord

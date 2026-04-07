@@ -30,7 +30,7 @@ export interface ProgressData {
   progressionAccuracy: Record<string, { correct: number; total: number }>;
 }
 
-const STORAGE_KEY = 'piano-buddy-progress';
+const STORAGE_KEY = 'piano-bud-progress';
 
 // XP per correct answer
 const XP_CORRECT = 10;
