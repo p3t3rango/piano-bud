@@ -61,6 +61,11 @@ export class PitchDetector {
   private _mlLastUpdate = 0;
   private _mlProcessing = false;
 
+  // Auto-gain
+  private _autoGainNode: GainNode | null = null;
+  private _autoGainValue = 1.0;
+  private _peakHistory: number[] = []; // Track recent peak levels
+
   // Debug
   public mlDebug = '';
 
@@ -96,22 +101,12 @@ export class PitchDetector {
       });
       this.source = this.audioCtx!.createMediaStreamSource(this.stream);
 
-      // Auto-gain: DynamicsCompressor boosts quiet signals, prevents clipping on loud ones
-      // Acts as an automatic level normalizer — adapts to whatever volume the mic receives
-      const compressor = this.audioCtx!.createDynamicsCompressor();
-      compressor.threshold.value = -50; // Start compressing at -50dB (catches quiet signals)
-      compressor.knee.value = 40;       // Wide knee for smooth, natural response
-      compressor.ratio.value = 12;      // Strong compression to normalize levels
-      compressor.attack.value = 0.003;  // Fast attack to catch transients
-      compressor.release.value = 0.25;  // Moderate release for natural decay
-
-      // Makeup gain to bring compressed signal to a good analysis level
-      const makeupGain = this.audioCtx!.createGain();
-      makeupGain.gain.value = 3.0; // Compensate for compression
-
-      this.source.connect(compressor);
-      compressor.connect(makeupGain);
-      makeupGain.connect(this.analyser!);
+      // Auto-gain: a simple gain node that we adjust periodically based on signal level.
+      // No compressor — just clean amplification that adapts over time.
+      this._autoGainNode = this.audioCtx!.createGain();
+      this._autoGainNode.gain.value = 1.0; // Start at unity, will adjust
+      this.source.connect(this._autoGainNode);
+      this._autoGainNode.connect(this.analyser!);
 
       this.scriptNode = this.audioCtx!.createScriptProcessor(4096, 1, 1);
       this.scriptNode.onaudioprocess = (e) => {
@@ -165,14 +160,41 @@ export class PitchDetector {
   isMLReady(): boolean { return this.modelReady; }
 
   // RMS using its own buffer — doesn't interfere with Pitchy
+  // Also adjusts auto-gain to keep signal at a good level
   getRMS(): number {
     if (!this.analyser || !this.rmsBuf) return 0;
     this.analyser.getFloatTimeDomainData(this.rmsBuf);
     let sum = 0;
+    let peak = 0;
     for (let i = 0; i < this.rmsBuf.length; i++) {
+      const abs = Math.abs(this.rmsBuf[i]);
       sum += this.rmsBuf[i] * this.rmsBuf[i];
+      if (abs > peak) peak = abs;
     }
-    return Math.sqrt(sum / this.rmsBuf.length);
+    const rms = Math.sqrt(sum / this.rmsBuf.length);
+
+    // Auto-gain: adjust to keep peaks around 0.3-0.5 range
+    // This is clean gain — no waveform distortion like a compressor
+    if (this._autoGainNode && peak > 0) {
+      this._peakHistory.push(peak);
+      if (this._peakHistory.length > 30) this._peakHistory.shift(); // ~0.5s of history
+
+      // Use the 90th percentile peak (ignore outlier spikes)
+      const sorted = [...this._peakHistory].sort((a, b) => a - b);
+      const p90 = sorted[Math.floor(sorted.length * 0.9)];
+
+      if (p90 > 0.001) {
+        const TARGET_PEAK = 0.4;
+        const desiredGain = TARGET_PEAK / p90;
+        // Clamp gain to reasonable range (0.5x to 20x)
+        const clampedGain = Math.max(0.5, Math.min(20, desiredGain));
+        // Smooth the gain change to avoid artifacts
+        this._autoGainValue = this._autoGainValue * 0.95 + clampedGain * 0.05;
+        this._autoGainNode.gain.setValueAtTime(this._autoGainValue, this.audioCtx!.currentTime);
+      }
+    }
+
+    return rms;
   }
 
   // ── Single note via Pitchy ──
