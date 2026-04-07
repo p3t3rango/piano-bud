@@ -1,5 +1,4 @@
-// Retro synthesizer for reference tones and sound effects
-// Uses square/triangle waves for NES/Game Boy aesthetic
+// Synthesizer with instrument selection and metronome sounds
 
 import { midiToFreq } from '../music/theory';
 
@@ -21,7 +20,6 @@ export async function unlockAudio(): Promise<void> {
   if (ctx.state === 'suspended') {
     await ctx.resume();
   }
-  // Play a silent buffer to fully unlock on iOS
   const buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
@@ -29,64 +27,160 @@ export async function unlockAudio(): Promise<void> {
   source.start(0);
 }
 
-interface NoteOptions {
-  midi: number;
-  duration?: number; // seconds
-  wave?: OscillatorType;
-  volume?: number; // 0-1
-  attack?: number;
-  decay?: number;
-  sustain?: number;
-  release?: number;
+// ── Instrument types ──
+
+export type Instrument = 'piano' | 'retro' | 'sine' | '8bit' | 'warm';
+
+export const INSTRUMENTS: { id: Instrument; label: string }[] = [
+  { id: 'piano', label: 'Piano' },
+  { id: 'retro', label: 'Retro' },
+  { id: 'sine', label: 'Sine' },
+  { id: '8bit', label: '8-Bit' },
+  { id: 'warm', label: 'Warm' },
+];
+
+interface InstrumentConfig {
+  wave: OscillatorType;
+  attack: number;
+  decay: number;
+  sustain: number;
+  release: number;
+  harmonics?: { ratio: number; gain: number; wave: OscillatorType }[];
+  filterFreq?: number;
 }
 
-// Play a single note with ADSR envelope
+const INSTRUMENT_CONFIGS: Record<Instrument, InstrumentConfig> = {
+  piano: {
+    wave: 'triangle',
+    attack: 0.005,
+    decay: 0.3,
+    sustain: 0.2,
+    release: 0.4,
+    harmonics: [
+      { ratio: 2, gain: 0.4, wave: 'sine' },
+      { ratio: 3, gain: 0.15, wave: 'sine' },
+      { ratio: 4, gain: 0.08, wave: 'sine' },
+    ],
+  },
+  retro: {
+    wave: 'triangle',
+    attack: 0.02,
+    decay: 0.1,
+    sustain: 0.6,
+    release: 0.3,
+  },
+  sine: {
+    wave: 'sine',
+    attack: 0.01,
+    decay: 0.05,
+    sustain: 0.8,
+    release: 0.2,
+  },
+  '8bit': {
+    wave: 'square',
+    attack: 0.005,
+    decay: 0.08,
+    sustain: 0.5,
+    release: 0.15,
+  },
+  warm: {
+    wave: 'sawtooth',
+    attack: 0.03,
+    decay: 0.15,
+    sustain: 0.5,
+    release: 0.3,
+    filterFreq: 2000,
+  },
+};
+
+// ── Note playback ──
+
+interface NoteOptions {
+  midi: number;
+  duration?: number;
+  instrument?: Instrument;
+  volume?: number;
+}
+
 export function playNote(opts: NoteOptions): void {
   const ctx = getAudioContext();
   const {
     midi,
     duration = 1,
-    wave = 'triangle',
+    instrument = 'retro',
     volume = 0.3,
-    attack = 0.02,
-    decay = 0.1,
-    sustain = 0.6,
-    release = 0.3,
   } = opts;
 
+  const config = INSTRUMENT_CONFIGS[instrument];
   const freq = midiToFreq(midi);
   const now = ctx.currentTime;
 
+  const masterGain = ctx.createGain();
+  let destination: AudioNode = ctx.destination;
+
+  // Optional low-pass filter for warm sounds
+  if (config.filterFreq) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(config.filterFreq, now);
+    filter.Q.setValueAtTime(1, now);
+    filter.connect(ctx.destination);
+    destination = filter;
+  }
+
+  masterGain.connect(destination);
+
+  // Main oscillator
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
-
-  osc.type = wave;
+  osc.type = config.wave;
   osc.frequency.setValueAtTime(freq, now);
 
-  // ADSR envelope
+  // ADSR
   gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(volume, now + attack);
-  gain.gain.linearRampToValueAtTime(volume * sustain, now + attack + decay);
-  gain.gain.setValueAtTime(volume * sustain, now + duration - release);
+  gain.gain.linearRampToValueAtTime(volume, now + config.attack);
+  gain.gain.linearRampToValueAtTime(volume * config.sustain, now + config.attack + config.decay);
+  const sustainEnd = Math.max(now + duration - config.release, now + config.attack + config.decay);
+  gain.gain.setValueAtTime(volume * config.sustain, sustainEnd);
   gain.gain.linearRampToValueAtTime(0, now + duration);
 
   osc.connect(gain);
-  gain.connect(ctx.destination);
-
+  gain.connect(masterGain);
   osc.start(now);
   osc.stop(now + duration + 0.05);
+
+  // Harmonics for richer sound (piano)
+  if (config.harmonics) {
+    for (const h of config.harmonics) {
+      const hOsc = ctx.createOscillator();
+      const hGain = ctx.createGain();
+      hOsc.type = h.wave;
+      hOsc.frequency.setValueAtTime(freq * h.ratio, now);
+
+      const hVol = volume * h.gain;
+      hGain.gain.setValueAtTime(0, now);
+      hGain.gain.linearRampToValueAtTime(hVol, now + config.attack);
+      // Harmonics decay faster
+      hGain.gain.exponentialRampToValueAtTime(0.001, now + duration * 0.7);
+
+      hOsc.connect(hGain);
+      hGain.connect(masterGain);
+      hOsc.start(now);
+      hOsc.stop(now + duration + 0.05);
+    }
+  }
 }
 
-// Play a chord (multiple notes)
+// Play a chord
 export function playChord(
   midis: number[],
   duration = 1.5,
-  wave: OscillatorType = 'triangle',
-  stagger = 0.02 // slight stagger for realism
+  instrument: Instrument = 'retro',
+  stagger = 0.015
 ): void {
   midis.forEach((midi, i) => {
     setTimeout(() => {
-      playNote({ midi, duration, wave, volume: 0.25 / Math.sqrt(midis.length) });
+      playNote({ midi, duration, instrument, volume: 0.25 / Math.sqrt(midis.length) });
     }, i * stagger * 1000);
   });
 }
@@ -95,8 +189,8 @@ export function playChord(
 export function playScale(
   rootMidi: number,
   intervals: number[],
-  tempo = 200, // ms per note
-  wave: OscillatorType = 'triangle'
+  tempo = 200,
+  instrument: Instrument = 'retro'
 ): void {
   const ascending = intervals.map(i => rootMidi + i);
   const descending = [...ascending].reverse().slice(1);
@@ -104,24 +198,24 @@ export function playScale(
 
   allNotes.forEach((midi, i) => {
     setTimeout(() => {
-      playNote({ midi, duration: tempo / 1000 * 0.9, wave, volume: 0.3 });
+      playNote({ midi, duration: tempo / 1000 * 0.9, instrument, volume: 0.3 });
     }, i * tempo);
   });
 }
 
-// Play an interval (two notes, either simultaneous or sequential)
+// Play an interval
 export function playInterval(
   rootMidi: number,
   semitones: number,
   mode: 'harmonic' | 'melodic' = 'melodic',
-  wave: OscillatorType = 'triangle'
+  instrument: Instrument = 'retro'
 ): void {
   if (mode === 'harmonic') {
-    playChord([rootMidi, rootMidi + semitones], 1.5, wave);
+    playChord([rootMidi, rootMidi + semitones], 1.5, instrument);
   } else {
-    playNote({ midi: rootMidi, duration: 0.8, wave });
+    playNote({ midi: rootMidi, duration: 0.8, instrument });
     setTimeout(() => {
-      playNote({ midi: rootMidi + semitones, duration: 0.8, wave });
+      playNote({ midi: rootMidi + semitones, duration: 0.8, instrument });
     }, 900);
   }
 }
@@ -131,8 +225,8 @@ export function playProgression(
   rootMidi: number,
   degrees: number[],
   qualities: ('major' | 'minor' | 'diminished' | 'dominant7')[],
-  tempo = 800, // ms per chord
-  wave: OscillatorType = 'triangle'
+  tempo = 800,
+  instrument: Instrument = 'retro'
 ): void {
   const chordIntervals: Record<string, number[]> = {
     major: [0, 4, 7],
@@ -146,19 +240,19 @@ export function playProgression(
       const base = rootMidi + degree;
       const intervals = chordIntervals[qualities[i]];
       const midis = intervals.map(iv => base + iv);
-      playChord(midis, tempo / 1000 * 0.9, wave);
+      playChord(midis, tempo / 1000 * 0.9, instrument);
     }, i * tempo);
   });
 }
 
-// 8-bit sound effects
+// ── Sound effects ──
+
 export function playSfx(type: 'correct' | 'incorrect' | 'levelup' | 'click'): void {
   const ctx = getAudioContext();
   const now = ctx.currentTime;
 
   switch (type) {
     case 'correct': {
-      // Ascending two-tone chime
       [0, 0.12].forEach((delay, i) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -174,7 +268,6 @@ export function playSfx(type: 'correct' | 'incorrect' | 'levelup' | 'click'): vo
       break;
     }
     case 'incorrect': {
-      // Descending buzz
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'square';
@@ -189,7 +282,6 @@ export function playSfx(type: 'correct' | 'incorrect' | 'levelup' | 'click'): vo
       break;
     }
     case 'levelup': {
-      // Ascending arpeggio
       [523, 659, 784, 1047].forEach((freq, i) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -220,18 +312,103 @@ export function playSfx(type: 'correct' | 'incorrect' | 'levelup' | 'click'): vo
   }
 }
 
-// Metronome tick
-export function playMetronomeTick(accent = false): void {
+// ── Metronome sounds ──
+
+export type MetronomeSound = 'click' | 'wood' | 'hihat' | 'beep';
+
+export const METRONOME_SOUNDS: { id: MetronomeSound; label: string }[] = [
+  { id: 'click', label: 'Click' },
+  { id: 'wood', label: 'Wood' },
+  { id: 'hihat', label: 'Hi-Hat' },
+  { id: 'beep', label: 'Beep' },
+];
+
+// Beat accent level: 0 = off, 1 = normal, 2 = accent
+export type BeatLevel = 0 | 1 | 2;
+
+export function playMetronomeBeat(level: BeatLevel, sound: MetronomeSound = 'click'): void {
+  if (level === 0) return;
+
   const ctx = getAudioContext();
   const now = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'square';
-  osc.frequency.setValueAtTime(accent ? 1200 : 800, now);
-  gain.gain.setValueAtTime(accent ? 0.2 : 0.12, now);
-  gain.gain.linearRampToValueAtTime(0, now + 0.04);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(now);
-  osc.stop(now + 0.05);
+  const vol = level === 2 ? 0.35 : 0.18;
+
+  switch (sound) {
+    case 'click': {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(level === 2 ? 1200 : 800, now);
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.06);
+      break;
+    }
+    case 'wood': {
+      // Band-pass filtered noise burst for wood block
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(level === 2 ? 3200 : 2400, now);
+      filter.Q.setValueAtTime(15, now);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(level === 2 ? 800 : 600, now);
+      osc2.type = 'square';
+      osc2.frequency.setValueAtTime(level === 2 ? 1600 : 1200, now);
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+      osc.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc2.start(now);
+      osc.stop(now + 0.05);
+      osc2.stop(now + 0.05);
+      break;
+    }
+    case 'hihat': {
+      // Multiple detuned square waves for metallic sound
+      const gain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.setValueAtTime(level === 2 ? 8000 : 7000, now);
+      gain.gain.setValueAtTime(vol * 0.6, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + (level === 2 ? 0.08 : 0.05));
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      [1047, 1109, 1175, 1245, 1319].forEach(f => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f * (level === 2 ? 1.2 : 1), now);
+        osc.connect(filter);
+        osc.start(now);
+        osc.stop(now + 0.1);
+      });
+      break;
+    }
+    case 'beep': {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(level === 2 ? 1000 : 660, now);
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.07);
+      break;
+    }
+  }
+}
+
+// Legacy compat
+export function playMetronomeTick(accent = false): void {
+  playMetronomeBeat(accent ? 2 : 1, 'click');
 }

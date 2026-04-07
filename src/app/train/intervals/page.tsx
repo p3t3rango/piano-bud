@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { INTERVALS, getIntervalsByDifficulty, type IntervalDef } from '@/lib/music/intervals';
-import { playInterval, playSfx, unlockAudio } from '@/lib/audio/synth';
+import { playInterval, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
 import { recordExercise } from '@/lib/progress/store';
 import { midiToNoteName } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
@@ -32,6 +32,7 @@ export default function IntervalTrainerPage() {
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>('retro');
 
   const options = getIntervalsByDifficulty(difficulty).filter(i => i.semitones > 0);
 
@@ -42,8 +43,16 @@ export default function IntervalTrainerPage() {
     setAnswered(false);
     setSelectedAnswer(null);
     setFeedback(null);
-    playInterval(q.rootMidi, q.interval.semitones, q.mode);
-  }, [difficulty, playMode]);
+    playInterval(q.rootMidi, q.interval.semitones, q.mode, instrument);
+  }, [difficulty, playMode, instrument]);
+
+  const restart = () => {
+    setScore({ correct: 0, total: 0 });
+    setQuestion(null);
+    setAnswered(false);
+    setSelectedAnswer(null);
+    setFeedback(null);
+  };
 
   const handleAnswer = (semitones: number) => {
     if (answered || !question) return;
@@ -51,11 +60,7 @@ export default function IntervalTrainerPage() {
     setSelectedAnswer(semitones);
 
     const correct = semitones === question.interval.semitones;
-    if (correct) {
-      playSfx('correct');
-    } else {
-      playSfx('incorrect');
-    }
+    playSfx(correct ? 'correct' : 'incorrect');
 
     const result = recordExercise('interval', question.interval.name, correct);
     setFeedback({ xp: result.xpGained, levelUp: result.leveledUp });
@@ -67,7 +72,7 @@ export default function IntervalTrainerPage() {
 
   const replayQuestion = () => {
     if (!question) return;
-    playInterval(question.rootMidi, question.interval.semitones, question.mode);
+    playInterval(question.rootMidi, question.interval.semitones, question.mode, instrument);
   };
 
   return (
@@ -87,7 +92,7 @@ export default function IntervalTrainerPage() {
             {d === 1 ? 'Easy' : d === 2 ? 'Medium' : 'Hard'}
           </button>
         ))}
-        <span className="text-[7px] text-cream-dim mx-2 self-center" style={{ fontFamily: 'var(--font-pixel)' }}>|</span>
+        <span className="text-[7px] text-cream-dim mx-1 self-center" style={{ fontFamily: 'var(--font-pixel)' }}>|</span>
         {(['melodic', 'harmonic'] as PlayMode[]).map(m => (
           <button
             key={m}
@@ -97,6 +102,24 @@ export default function IntervalTrainerPage() {
             {m}
           </button>
         ))}
+      </div>
+
+      {/* Instrument & restart */}
+      <div className="flex gap-2 flex-wrap justify-center items-center">
+        {INSTRUMENTS.map(inst => (
+          <button
+            key={inst.id}
+            onClick={() => setInstrument(inst.id)}
+            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
+          >
+            {inst.label}
+          </button>
+        ))}
+        {score.total > 0 && (
+          <button onClick={restart} className="badge badge-hard">
+            Restart
+          </button>
+        )}
       </div>
 
       {/* Score */}

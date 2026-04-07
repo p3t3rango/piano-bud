@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { PROGRESSIONS, getProgressionsByDifficulty, type ProgressionDef } from '@/lib/music/scales';
-import { playProgression, playSfx, unlockAudio } from '@/lib/audio/synth';
+import { playProgression, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
 import { recordExercise } from '@/lib/progress/store';
 import { pitchClassName } from '@/lib/music/theory';
 
@@ -28,6 +28,7 @@ export default function ProgressionTrainerPage() {
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>('retro');
 
   const options = getProgressionsByDifficulty(difficulty);
 
@@ -38,8 +39,16 @@ export default function ProgressionTrainerPage() {
     setAnswered(false);
     setSelectedAnswer(null);
     setFeedback(null);
-    playProgression(q.rootMidi, q.progression.degrees, q.progression.chordQualities, 900);
-  }, [difficulty]);
+    playProgression(q.rootMidi, q.progression.degrees, q.progression.chordQualities, 900, instrument);
+  }, [difficulty, instrument]);
+
+  const restart = () => {
+    setScore({ correct: 0, total: 0 });
+    setQuestion(null);
+    setAnswered(false);
+    setSelectedAnswer(null);
+    setFeedback(null);
+  };
 
   const handleAnswer = (name: string) => {
     if (answered || !question) return;
@@ -59,7 +68,7 @@ export default function ProgressionTrainerPage() {
 
   const replayQuestion = () => {
     if (!question) return;
-    playProgression(question.rootMidi, question.progression.degrees, question.progression.chordQualities, 900);
+    playProgression(question.rootMidi, question.progression.degrees, question.progression.chordQualities, 900, instrument);
   };
 
   return (
@@ -78,6 +87,14 @@ export default function ProgressionTrainerPage() {
             {d === 1 ? 'Easy' : d === 2 ? 'Medium' : 'Hard'}
           </button>
         ))}
+      </div>
+      <div className="flex gap-2 flex-wrap justify-center items-center">
+        {INSTRUMENTS.map(inst => (
+          <button key={inst.id} onClick={() => setInstrument(inst.id)}
+            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
+          >{inst.label}</button>
+        ))}
+        {score.total > 0 && <button onClick={restart} className="badge badge-hard">Restart</button>}
       </div>
 
       {score.total > 0 && (

@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { CHORD_TYPES, getChordsByDifficulty, type ChordDef } from '@/lib/music/chords';
-import { playChord, playSfx, unlockAudio } from '@/lib/audio/synth';
+import { playChord, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
 import { recordExercise } from '@/lib/progress/store';
 import { pitchClassName, NOTE_NAMES } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
@@ -32,6 +32,7 @@ export default function ChordTrainerPage() {
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>('retro');
 
   const options = getChordsByDifficulty(difficulty);
 
@@ -42,8 +43,16 @@ export default function ChordTrainerPage() {
     setAnswered(false);
     setSelectedAnswer(null);
     setFeedback(null);
-    playChord(q.midiNotes, 1.5);
-  }, [difficulty]);
+    playChord(q.midiNotes, 1.5, instrument);
+  }, [difficulty, instrument]);
+
+  const restart = () => {
+    setScore({ correct: 0, total: 0 });
+    setQuestion(null);
+    setAnswered(false);
+    setSelectedAnswer(null);
+    setFeedback(null);
+  };
 
   const handleAnswer = (shortName: string) => {
     if (answered || !question) return;
@@ -67,7 +76,7 @@ export default function ChordTrainerPage() {
 
   const replayQuestion = () => {
     if (!question) return;
-    playChord(question.midiNotes, 1.5);
+    playChord(question.midiNotes, 1.5, instrument);
   };
 
   return (
@@ -87,6 +96,14 @@ export default function ChordTrainerPage() {
             {d === 1 ? 'Easy' : d === 2 ? 'Medium' : 'Hard'}
           </button>
         ))}
+      </div>
+      <div className="flex gap-2 flex-wrap justify-center items-center">
+        {INSTRUMENTS.map(inst => (
+          <button key={inst.id} onClick={() => setInstrument(inst.id)}
+            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
+          >{inst.label}</button>
+        ))}
+        {score.total > 0 && <button onClick={restart} className="badge badge-hard">Restart</button>}
       </div>
 
       {/* Score */}

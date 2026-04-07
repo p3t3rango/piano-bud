@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { SCALES, getScalesByDifficulty, type ScaleDef } from '@/lib/music/scales';
-import { playScale, playSfx, unlockAudio } from '@/lib/audio/synth';
+import { playScale, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
 import { recordExercise } from '@/lib/progress/store';
 import { pitchClassName } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
@@ -29,6 +29,7 @@ export default function ScaleTrainerPage() {
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
+  const [instrument, setInstrument] = useState<Instrument>('retro');
 
   const options = getScalesByDifficulty(difficulty);
 
@@ -39,8 +40,16 @@ export default function ScaleTrainerPage() {
     setAnswered(false);
     setSelectedAnswer(null);
     setFeedback(null);
-    playScale(q.rootMidi, q.scale.intervals, 250);
-  }, [difficulty]);
+    playScale(q.rootMidi, q.scale.intervals, 250, instrument);
+  }, [difficulty, instrument]);
+
+  const restart = () => {
+    setScore({ correct: 0, total: 0 });
+    setQuestion(null);
+    setAnswered(false);
+    setSelectedAnswer(null);
+    setFeedback(null);
+  };
 
   const handleAnswer = (name: string) => {
     if (answered || !question) return;
@@ -60,7 +69,7 @@ export default function ScaleTrainerPage() {
 
   const replayQuestion = () => {
     if (!question) return;
-    playScale(question.rootMidi, question.scale.intervals, 250);
+    playScale(question.rootMidi, question.scale.intervals, 250, instrument);
   };
 
   return (
@@ -79,6 +88,14 @@ export default function ScaleTrainerPage() {
             {d === 1 ? 'Easy' : d === 2 ? 'Medium' : 'Hard'}
           </button>
         ))}
+      </div>
+      <div className="flex gap-2 flex-wrap justify-center items-center">
+        {INSTRUMENTS.map(inst => (
+          <button key={inst.id} onClick={() => setInstrument(inst.id)}
+            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
+          >{inst.label}</button>
+        ))}
+        {score.total > 0 && <button onClick={restart} className="badge badge-hard">Restart</button>}
       </div>
 
       {score.total > 0 && (

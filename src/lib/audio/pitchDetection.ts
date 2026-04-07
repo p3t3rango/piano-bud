@@ -3,8 +3,8 @@
 
 import { freqToNearestMidi, midiToPitchClass, midiToFreq } from '../music/theory';
 
-const FFT_SIZE = 4096;
-const MIN_FREQ = 60;  // ~B1
+const FFT_SIZE = 8192; // Higher for better frequency resolution
+const MIN_FREQ = 55;  // ~A1
 const MAX_FREQ = 4200; // ~C8
 
 export interface PitchResult {
@@ -30,12 +30,20 @@ export class PitchDetector {
   private running = false;
 
   // Lazy init - must be called from user gesture on mobile
+  private gainNode: GainNode | null = null;
+
   private init(): void {
     if (this.audioCtx) return;
     this.audioCtx = new AudioContext();
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = FFT_SIZE;
-    this.analyser.smoothingTimeConstant = 0.8;
+    this.analyser.smoothingTimeConstant = 0.75;
+    this.analyser.minDecibels = -90;
+    this.analyser.maxDecibels = -10;
+    // Boost input gain for quiet sources (phone mic picking up piano across the room)
+    this.gainNode = this.audioCtx.createGain();
+    this.gainNode.gain.value = 4.0; // 4x boost
+    this.gainNode.connect(this.analyser);
     this.timeDomainBuffer = new Float32Array(FFT_SIZE);
     this.frequencyBuffer = new Float32Array(this.analyser.frequencyBinCount);
   }
@@ -53,7 +61,7 @@ export class PitchDetector {
         },
       });
       this.source = this.audioCtx!.createMediaStreamSource(this.stream);
-      this.source.connect(this.analyser!);
+      this.source.connect(this.gainNode!);
       if (this.audioCtx!.state === 'suspended') {
         await this.audioCtx!.resume();
       }
@@ -99,7 +107,7 @@ export class PitchDetector {
 
     // Check if there's enough signal
     const rms = this.getRMS();
-    if (rms < 0.01) return null;
+    if (rms < 0.003) return null; // Lower threshold for better sensitivity
 
     const sampleRate = this.audioCtx!.sampleRate;
     const buf = this.timeDomainBuffer;
@@ -123,7 +131,7 @@ export class PitchDetector {
 
     // Find the first peak above threshold
     let bestTau = -1;
-    let bestVal = 0.3; // minimum threshold
+    let bestVal = 0.2; // lower threshold for better sensitivity
     let rising = false;
 
     for (let tau = minPeriod; tau <= maxPeriod; tau++) {
@@ -178,7 +186,7 @@ export class PitchDetector {
 
       // Convert dB to linear (frequencyBuffer is in dB)
       const db = this.frequencyBuffer[i];
-      if (db < -60) continue; // Ignore very quiet bins
+      if (db < -70) continue; // Lower threshold for quiet signals
 
       const energy = Math.pow(10, db / 20);
       const midi = freqToNearestMidi(freq);
@@ -202,7 +210,7 @@ export class PitchDetector {
     }
 
     // Find active pitch classes (above threshold)
-    const threshold = 0.3;
+    const threshold = 0.25;
     const activePitchClasses = chroma
       .map((e, i) => ({ energy: e, pc: i }))
       .filter(x => x.energy > threshold)
