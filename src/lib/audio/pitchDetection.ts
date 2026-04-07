@@ -62,6 +62,9 @@ export class PitchDetector {
   private _mlLastUpdate = 0;
   private _mlProcessing = false;
 
+  // Debug info visible to UI
+  public mlDebug = '';
+
   private static readonly FFT_SIZE = 4096;
 
   private init(): void {
@@ -360,10 +363,10 @@ export class PitchDetector {
         true  // melodia trick — helps find sustained notes
       );
 
-      // Extract MIDI notes — amplitude > 0.45 filters ambient noise (noise ≈ 0.2-0.35)
+      // Extract MIDI notes — amplitude threshold filters noise
       const MIN_MIDI = 36; // C2
       const MAX_MIDI = 96; // C7
-      const AMP_THRESHOLD = 0.45;
+      const AMP_THRESHOLD = 0.35;
       const midiMap = new Map<number, number>();
       for (const note of notes) {
         if (note.pitchMidi < MIN_MIDI || note.pitchMidi > MAX_MIDI) continue;
@@ -377,11 +380,20 @@ export class PitchDetector {
         .map(([midi]) => midi)
         .slice(0, 6);
 
-      // Sanity: if notes span > 2 octaves, likely noise — discard
+      // Build debug string with amplitudes
+      const debugParts = Array.from(midiMap.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([midi, amp]) => `${midiToNoteName(midi)}(${amp.toFixed(2)})`);
+      const allNotesDebug = notes
+        .filter(n => n.pitchMidi >= MIN_MIDI && n.pitchMidi <= MAX_MIDI)
+        .map(n => `${midiToNoteName(n.pitchMidi)}:${n.amplitude.toFixed(2)}`)
+        .slice(0, 10);
+
+      // Sanity: if notes span > 2 octaves, likely noise
       if (sortedMidis.length >= 2) {
         const span = Math.max(...sortedMidis) - Math.min(...sortedMidis);
         if (span > 24) {
-          console.log(`[ML] discarded (span=${span} semitones): ${sortedMidis.map(m => midiToNoteName(m)).join(' ')}`);
+          this.mlDebug = `SKIP span=${span}: ${debugParts.join(' ')}`;
           this._mlMidis = [];
           this._mlChroma = new Array(12).fill(0);
           this._mlLastUpdate = Date.now();
@@ -390,7 +402,9 @@ export class PitchDetector {
         }
       }
 
-      console.log(`[ML] detected ${sortedMidis.length}: ${sortedMidis.map(m => midiToNoteName(m)).join(' ')}`);
+      this.mlDebug = sortedMidis.length > 0
+        ? `${debugParts.join(' ')} [all: ${allNotesDebug.join(' ')}]`
+        : `no notes (raw: ${notes.length}, all below ${AMP_THRESHOLD})`;
 
       this._mlMidis = sortedMidis;
 

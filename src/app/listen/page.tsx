@@ -26,6 +26,8 @@ interface DisplayState {
   volume: number;
   chroma: number[];
   activePCs: number[];
+  mlDebug: string;
+  mlReady: boolean;
 }
 
 const EMPTY_CHROMA = new Array(12).fill(0);
@@ -34,7 +36,7 @@ function emptyDisplay(): DisplayState {
   return {
     noteName: '', frequency: 0, centsOff: 0, midi: 0, hasNote: false,
     chord: null, chordLabel: '', chordFull: '', chordNotes: '',
-    intervalName: '', intervalFrom: '', intervalTo: '', hasInterval: false,
+    intervalName: '', intervalFrom: '', intervalTo: '', hasInterval: false, mlDebug: '', mlReady: false,
     volume: 0, chroma: EMPTY_CHROMA, activePCs: [],
   };
 }
@@ -76,6 +78,8 @@ export default function ListenPage() {
 
     const rms = detector.getRMS();
     d.volume = Math.min(rms * 10, 1);
+    d.mlReady = detector.isMLReady();
+    d.mlDebug = detector.mlDebug;
 
     // ── Single note: Pitchy (instant, monophonic) ──
     const pitch = detector.detectPitch();
@@ -287,6 +291,18 @@ export default function ListenPage() {
               <p className="text-[7px] text-cream-dim" style={{ fontFamily: 'var(--font-pixel)' }}>
                 {display.intervalFrom} → {display.intervalTo}
               </p>
+            </div>
+
+            {/* ML debug info */}
+            <div className="text-center w-full mt-2 px-2">
+              <p className="text-[6px] text-cream-dim" style={{ fontFamily: 'var(--font-pixel)' }}>
+                {display.mlReady ? 'ML ACTIVE' : 'ML LOADING...'}
+              </p>
+              {display.mlDebug && (
+                <p className="text-[6px] text-purple mt-1 break-all" style={{ fontFamily: 'var(--font-pixel)' }}>
+                  {display.mlDebug}
+                </p>
+              )}
             </div>
 
             {/* Stop button */}
