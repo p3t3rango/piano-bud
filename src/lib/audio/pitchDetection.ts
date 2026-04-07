@@ -71,8 +71,8 @@ export class PitchDetector {
     this.audioCtx = new AudioContext();
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = PitchDetector.FFT_SIZE;
-    // LOW smoothing = fast response to new notes
-    this.analyser.smoothingTimeConstant = 0.3;
+    // Moderate smoothing — balances responsiveness vs noise rejection on mobile
+    this.analyser.smoothingTimeConstant = 0.4;
     this.pitchBuf = new Float32Array(PitchDetector.FFT_SIZE);
     this.rmsBuf = new Float32Array(PitchDetector.FFT_SIZE);
     this.freqBuf = new Float32Array(this.analyser.frequencyBinCount);
@@ -95,7 +95,23 @@ export class PitchDetector {
         },
       });
       this.source = this.audioCtx!.createMediaStreamSource(this.stream);
-      this.source.connect(this.analyser!);
+
+      // Auto-gain: DynamicsCompressor boosts quiet signals, prevents clipping on loud ones
+      // Acts as an automatic level normalizer — adapts to whatever volume the mic receives
+      const compressor = this.audioCtx!.createDynamicsCompressor();
+      compressor.threshold.value = -50; // Start compressing at -50dB (catches quiet signals)
+      compressor.knee.value = 40;       // Wide knee for smooth, natural response
+      compressor.ratio.value = 12;      // Strong compression to normalize levels
+      compressor.attack.value = 0.003;  // Fast attack to catch transients
+      compressor.release.value = 0.25;  // Moderate release for natural decay
+
+      // Makeup gain to bring compressed signal to a good analysis level
+      const makeupGain = this.audioCtx!.createGain();
+      makeupGain.gain.value = 3.0; // Compensate for compression
+
+      this.source.connect(compressor);
+      compressor.connect(makeupGain);
+      makeupGain.connect(this.analyser!);
 
       this.scriptNode = this.audioCtx!.createScriptProcessor(4096, 1, 1);
       this.scriptNode.onaudioprocess = (e) => {
@@ -173,15 +189,15 @@ export class PitchDetector {
         sum += this.pitchBuf[i] * this.pitchBuf[i];
       }
       const rms = Math.sqrt(sum / this.pitchBuf.length);
-      if (rms < 0.005) return null; // Lower gate for sensitivity
+      if (rms < 0.003) return null; // Very low gate for mobile sensitivity
 
       const [pitch, clarity] = this.pitchyDetector.findPitch(
         this.pitchBuf,
         this.audioCtx.sampleRate
       );
 
-      // Lower clarity threshold for phone mics
-      if (clarity < 0.75 || pitch < 60 || pitch > 2100) return null;
+      // Lower clarity for phone mics (weaker signal = lower clarity)
+      if (clarity < 0.65 || pitch < 60 || pitch > 2100) return null;
 
       return {
         frequency: pitch,
@@ -205,8 +221,8 @@ export class PitchDetector {
     // DON'T clear ML results based on RMS — use timeout instead.
     // Piano chords decay slowly. Let results persist until next ML update.
 
-    // Run ML every 500ms when there's signal
-    if (this.modelReady && !this._mlProcessing && now - this._mlLastUpdate > 500 && rms > 0.008) {
+    // Run ML every 500ms when there's any signal
+    if (this.modelReady && !this._mlProcessing && now - this._mlLastUpdate > 500 && rms > 0.003) {
       this.runMLChordDetection();
     }
 
