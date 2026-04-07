@@ -160,6 +160,10 @@ export class PitchDetector {
     return this.running;
   }
 
+  isMLReady(): boolean {
+    return this.modelReady;
+  }
+
   getRMS(): number {
     if (!this.analyser || !this.timeBuf) return 0;
     this.analyser.getFloatTimeDomainData(this.timeBuf);
@@ -233,24 +237,48 @@ export class PitchDetector {
       };
     }
 
-    // Fallback: FFT-based chromagram
+    // Fallback: FFT-based chromagram with harmonic suppression
     this.analyser.getFloatFrequencyData(this.freqBuf);
     const sampleRate = this.audioCtx.sampleRate;
     const chroma = new Array(12).fill(0);
 
-    for (let i = 1; i < this.freqBuf.length; i++) {
+    // First pass: find peaks (potential fundamentals)
+    const peaks: { freq: number; power: number; bin: number }[] = [];
+    for (let i = 2; i < this.freqBuf.length - 1; i++) {
       const freq = (i * sampleRate) / PitchDetector.FFT_SIZE;
       if (freq < 65 || freq > 2100) continue;
       const db = this.freqBuf[i];
-      if (db < -65) continue;
-      const power = Math.pow(10, db / 10);
-      const midi = freqToNearestMidi(freq);
-      const pc = midiToPitchClass(midi);
-      const freqExpected = midiToFreq(midi);
-      const centsDiff = Math.abs(1200 * Math.log2(freq / freqExpected));
-      if (centsDiff < 40) {
-        chroma[pc] += power;
+      if (db < -55) continue;
+      // Local peak check
+      if (db > this.freqBuf[i - 1] && db > this.freqBuf[i + 1]) {
+        peaks.push({ freq, power: Math.pow(10, db / 10), bin: i });
       }
+    }
+
+    // Second pass: suppress harmonics
+    // For each peak, check if it could be a harmonic of a stronger peak
+    const fundamentals = peaks.filter(peak => {
+      for (const other of peaks) {
+        if (other === peak) continue;
+        if (other.power <= peak.power) continue;
+        // Check if peak is 2nd, 3rd, 4th, or 5th harmonic of other
+        for (let h = 2; h <= 5; h++) {
+          const expectedHarmonicFreq = other.freq * h;
+          const ratio = peak.freq / expectedHarmonicFreq;
+          if (ratio > 0.97 && ratio < 1.03) {
+            // This peak is likely a harmonic of 'other' — suppress it
+            return false;
+          }
+        }
+      }
+      return true;
+    });
+
+    // Build chroma from fundamentals only
+    for (const peak of fundamentals) {
+      const midi = freqToNearestMidi(peak.freq);
+      const pc = midiToPitchClass(midi);
+      chroma[pc] += peak.power;
     }
 
     const maxEnergy = Math.max(...chroma);

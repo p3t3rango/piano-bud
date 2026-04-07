@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import PianoKeyboard from '@/components/PianoKeyboard';
 import { PitchDetector } from '@/lib/audio/pitchDetection';
-import { detectChordFromChroma, formatChord, formatChordFull, type DetectedChord } from '@/lib/music/chords';
+import { detectChordFromChroma, detectChordFromMidis, formatChord, formatChordFull, type DetectedChord } from '@/lib/music/chords';
 import { getIntervalName } from '@/lib/music/intervals';
 import { unlockAudio } from '@/lib/audio/synth';
 import { midiToNoteName, pitchClassName, freqToCentsOff, NOTE_NAMES } from '@/lib/music/theory';
@@ -118,25 +118,22 @@ export default function ListenPage() {
     }
     d.chroma = [...sc];
 
-    // Use ML-detected MIDI notes for active pitch classes
-    if (rawChroma.activeMidis && rawChroma.activeMidis.length > 0) {
+    // Chord detection
+    if (rawChroma.activeMidis && rawChroma.activeMidis.length >= 2) {
+      // ML path: use detected MIDI notes directly (no harmonics problem)
       d.activePCs = rawChroma.activePitchClasses;
-
-      // Build chord from ML-detected notes
-      if (rawChroma.activeMidis.length >= 2) {
-        const chord = detectChordFromChroma(rawChroma.chroma);
-        if (chord) {
-          d.chord = chord;
-          d.chordLabel = formatChord(chord);
-          d.chordFull = formatChordFull(chord);
-          d.chordNotes = rawChroma.activeMidis.map(m => midiToNoteName(m)).join(' - ');
-          chordHoldUntil.current = now + HOLD_MS;
-        }
+      const chord = detectChordFromMidis(rawChroma.activeMidis);
+      if (chord) {
+        d.chord = chord;
+        d.chordLabel = formatChord(chord);
+        d.chordFull = formatChordFull(chord);
+        d.chordNotes = rawChroma.activeMidis.map(m => midiToNoteName(m)).join(' - ');
+        chordHoldUntil.current = now + HOLD_MS;
       } else if (now > chordHoldUntil.current) {
         d.chord = null;
       }
     } else {
-      // Fallback: use smoothed chroma for active PCs
+      // Fallback: smoothed chroma (less accurate due to harmonics)
       const maxE = Math.max(...sc);
       if (maxE > 0.01) {
         d.activePCs = sc
@@ -148,13 +145,13 @@ export default function ListenPage() {
         d.activePCs = [];
       }
 
-      // Fallback chord detection from chroma
-      if (d.activePCs.length >= 2 && maxE > 0.01) {
+      if (d.activePCs.length >= 3 && maxE > 0.01) {
+        // Only attempt chord detection with 3+ pitch classes to reduce false positives
         const chord = detectChordFromChroma(sc.map(v => v / maxE));
-        if (chord && chord.confidence > 0.65) {
+        if (chord && chord.confidence > 0.75) {
           d.chord = chord;
           d.chordLabel = formatChord(chord);
-          d.chordFull = formatChordFull(chord);
+          d.chordFull = formatChordFull(chord) + ' *';
           d.chordNotes = chord.notes.map(pc => pitchClassName(pc)).join(' - ');
           chordHoldUntil.current = now + HOLD_MS;
         } else if (now > chordHoldUntil.current) {

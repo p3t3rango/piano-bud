@@ -64,7 +64,7 @@ export function detectChordFromChroma(
 ): DetectedChord | null {
   const types = CHORD_TYPES.filter(c => c.difficulty <= maxDifficulty);
   let best: DetectedChord | null = null;
-  let bestScore = 0.6; // Minimum threshold
+  let bestScore = 0.75; // Higher threshold to avoid false positives
 
   for (let root = 0; root < 12; root++) {
     for (const type of types) {
@@ -77,6 +77,56 @@ export function detectChordFromChroma(
           type,
           confidence: score,
           notes: type.intervals.map(i => (root + i) % 12),
+        };
+      }
+    }
+  }
+
+  return best;
+}
+
+// Detect chord from a set of MIDI note numbers (from ML detection)
+// This is much more accurate than chromagram matching because
+// the ML model already filtered out harmonics
+export function detectChordFromMidis(midis: number[]): DetectedChord | null {
+  if (midis.length < 2) return null;
+
+  // Get unique pitch classes, sorted lowest to highest
+  const pcs = [...new Set(midis.map(m => ((m % 12) + 12) % 12))].sort((a, b) => a - b);
+  if (pcs.length < 2) return null;
+
+  let best: DetectedChord | null = null;
+  let bestScore = 0;
+
+  // Try each pitch class as potential root
+  for (const root of pcs) {
+    // Calculate intervals from this root
+    const intervals = pcs.map(pc => ((pc - root) % 12 + 12) % 12).sort((a, b) => a - b);
+
+    // Match against chord types
+    for (const type of CHORD_TYPES) {
+      // Reduce chord intervals to within one octave for comparison
+      const typeIntervals = type.intervals.map(i => i % 12);
+
+      // Count how many chord tones are present
+      let matched = 0;
+      for (const ti of typeIntervals) {
+        if (intervals.includes(ti)) matched++;
+      }
+
+      // Score: proportion of chord tones found, penalize extra notes
+      const coverage = matched / typeIntervals.length;
+      const extraNotes = intervals.length - matched;
+      const score = coverage - extraNotes * 0.15;
+
+      // Must have at least the root and one other chord tone
+      if (matched >= 2 && score > bestScore) {
+        bestScore = score;
+        best = {
+          root,
+          type,
+          confidence: score,
+          notes: typeIntervals.map(i => (root + i) % 12),
         };
       }
     }
