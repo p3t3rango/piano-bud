@@ -360,10 +360,10 @@ export class PitchDetector {
         true  // melodia trick — helps find sustained notes
       );
 
-      // Extract MIDI notes — amplitude > 0.4 filters ambient noise (noise ≈ 0.2-0.3)
+      // Extract MIDI notes — amplitude > 0.45 filters ambient noise (noise ≈ 0.2-0.35)
       const MIN_MIDI = 36; // C2
       const MAX_MIDI = 96; // C7
-      const AMP_THRESHOLD = 0.4;
+      const AMP_THRESHOLD = 0.45;
       const midiMap = new Map<number, number>();
       for (const note of notes) {
         if (note.pitchMidi < MIN_MIDI || note.pitchMidi > MAX_MIDI) continue;
@@ -377,7 +377,20 @@ export class PitchDetector {
         .map(([midi]) => midi)
         .slice(0, 6);
 
-      console.log(`[ML] raw=${notes.length} filtered=${sortedMidis.length}: ${sortedMidis.map(m => midiToNoteName(m)).join(' ')}`);
+      // Sanity: if notes span > 2 octaves, likely noise — discard
+      if (sortedMidis.length >= 2) {
+        const span = Math.max(...sortedMidis) - Math.min(...sortedMidis);
+        if (span > 24) {
+          console.log(`[ML] discarded (span=${span} semitones): ${sortedMidis.map(m => midiToNoteName(m)).join(' ')}`);
+          this._mlMidis = [];
+          this._mlChroma = new Array(12).fill(0);
+          this._mlLastUpdate = Date.now();
+          this._mlProcessing = false;
+          return;
+        }
+      }
+
+      console.log(`[ML] detected ${sortedMidis.length}: ${sortedMidis.map(m => midiToNoteName(m)).join(' ')}`);
 
       this._mlMidis = sortedMidis;
 
