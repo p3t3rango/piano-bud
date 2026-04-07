@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import PianoKeyboard from '@/components/PianoKeyboard';
 import { PitchDetector } from '@/lib/audio/pitchDetection';
-import { detectChordFromChroma, detectChordFromMidis, formatChord, formatChordFull, type DetectedChord } from '@/lib/music/chords';
+import { detectChordFromMidis, formatChord, formatChordFull, type DetectedChord } from '@/lib/music/chords';
 import { getIntervalName } from '@/lib/music/intervals';
 import { unlockAudio } from '@/lib/audio/synth';
-import { midiToNoteName, pitchClassName, freqToCentsOff, NOTE_NAMES } from '@/lib/music/theory';
+import { midiToNoteName, midiToPitchClass, freqToCentsOff, NOTE_NAMES } from '@/lib/music/theory';
 
 // Stable display state — updated via refs, flushed to React on a throttle
 interface DisplayState {
@@ -26,7 +26,6 @@ interface DisplayState {
   volume: number;
   chroma: number[];
   activePCs: number[];
-  mlReady: boolean;
 }
 
 const EMPTY_CHROMA = new Array(12).fill(0);
@@ -35,7 +34,7 @@ function emptyDisplay(): DisplayState {
   return {
     noteName: '', frequency: 0, centsOff: 0, midi: 0, hasNote: false,
     chord: null, chordLabel: '', chordFull: '', chordNotes: '',
-    intervalName: '', intervalFrom: '', intervalTo: '', hasInterval: false, mlReady: false,
+    intervalName: '', intervalFrom: '', intervalTo: '', hasInterval: false,
     volume: 0, chroma: EMPTY_CHROMA, activePCs: [],
   };
 }
@@ -58,6 +57,10 @@ export default function ListenPage() {
   // Note history for intervals (stored in ref to avoid state churn)
   const noteHistory = useRef<{ midi: number; time: number }[]>([]);
 
+  // Chord detection: track all detected pitches in a sliding window
+  const chordWindow = useRef<{ midi: number; time: number }[]>([]);
+  const CHORD_WINDOW_MS = 1200; // Collect notes within this window to form a chord
+
   // Smoothed chroma (exponential moving average)
   const smoothChroma = useRef<number[]>(new Array(12).fill(0));
 
@@ -72,12 +75,10 @@ export default function ListenPage() {
     const now = Date.now();
     const d = displayRef.current;
 
-    // Volume and ML status
     const rms = detector.getRMS();
     d.volume = Math.min(rms * 10, 1);
-    d.mlReady = detector.isMLReady();
 
-    // Pitch detection (YIN confidence: 0-1, higher = more periodic)
+    // Pitch detection via Pitchy
     const pitch = detector.detectPitch();
     if (pitch && pitch.confidence > 0.5) {
       d.hasNote = true;
@@ -108,60 +109,49 @@ export default function ListenPage() {
           d.intervalTo = midiToNoteName(curr.midi);
         }
       }
+
+      // Add to chord window — collect all notes detected within a sliding window
+      const cw = chordWindow.current;
+      // Only add if this note isn't already in the window recently
+      const existingInWindow = cw.find(c => c.midi === pitch.midi && now - c.time < 300);
+      if (!existingInWindow) {
+        cw.push({ midi: pitch.midi, time: now });
+      }
     } else if (now > noteHoldUntil.current) {
       d.hasNote = false;
     }
 
-    // ML chord detection — getChroma() returns ML results when model is ready
-    const rawChroma = detector.getChroma();
+    // Clean old entries from chord window
+    chordWindow.current = chordWindow.current.filter(c => now - c.time < CHORD_WINDOW_MS);
+
+    // Build chord from notes in the window
+    const windowMidis = [...new Set(chordWindow.current.map(c => c.midi))];
+    // Build chromagram from window notes for keyboard display
     const sc = smoothChroma.current;
+    const windowChroma = new Array(12).fill(0);
+    for (const midi of windowMidis) {
+      windowChroma[midiToPitchClass(midi)] = 1;
+    }
     for (let i = 0; i < 12; i++) {
-      sc[i] = sc[i] * (1 - SMOOTH_FACTOR) + rawChroma.chroma[i] * SMOOTH_FACTOR;
+      sc[i] = sc[i] * 0.7 + windowChroma[i] * 0.3;
     }
     d.chroma = [...sc];
+    d.activePCs = windowMidis.map(m => midiToPitchClass(m));
 
-    // Chord detection
-    if (rawChroma.activeMidis && rawChroma.activeMidis.length >= 2) {
-      // ML path: use detected MIDI notes directly (no harmonics problem)
-      d.activePCs = rawChroma.activePitchClasses;
-      const chord = detectChordFromMidis(rawChroma.activeMidis);
+    // Chord detection from collected notes
+    if (windowMidis.length >= 2) {
+      const chord = detectChordFromMidis(windowMidis);
       if (chord) {
         d.chord = chord;
         d.chordLabel = formatChord(chord);
         d.chordFull = formatChordFull(chord);
-        d.chordNotes = rawChroma.activeMidis.map(m => midiToNoteName(m)).join(' - ');
+        d.chordNotes = windowMidis.sort((a, b) => a - b).map(m => midiToNoteName(m)).join(' - ');
         chordHoldUntil.current = now + HOLD_MS;
       } else if (now > chordHoldUntil.current) {
         d.chord = null;
       }
-    } else {
-      // Fallback: smoothed chroma (less accurate due to harmonics)
-      const maxE = Math.max(...sc);
-      if (maxE > 0.01) {
-        d.activePCs = sc
-          .map((e, i) => ({ e: e / maxE, i }))
-          .filter(x => x.e > 0.3)
-          .sort((a, b) => b.e - a.e)
-          .map(x => x.i);
-      } else {
-        d.activePCs = [];
-      }
-
-      if (d.activePCs.length >= 2 && maxE > 0.01) {
-        // Attempt chord detection from FFT fallback
-        const chord = detectChordFromChroma(sc.map(v => v / maxE));
-        if (chord && chord.confidence > 0.75) {
-          d.chord = chord;
-          d.chordLabel = formatChord(chord);
-          d.chordFull = formatChordFull(chord) + ' *';
-          d.chordNotes = chord.notes.map(pc => pitchClassName(pc)).join(' - ');
-          chordHoldUntil.current = now + HOLD_MS;
-        } else if (now > chordHoldUntil.current) {
-          d.chord = null;
-        }
-      } else if (now > chordHoldUntil.current) {
-        d.chord = null;
-      }
+    } else if (now > chordHoldUntil.current) {
+      d.chord = null;
     }
 
     // Throttled flush to React
@@ -254,15 +244,7 @@ export default function ListenPage() {
           </div>
         ) : (
           <>
-            {/* ML status + Volume meter */}
-            <div className="flex items-center gap-3 w-full justify-center">
-              <span
-                className={`text-[7px] ${display.mlReady ? 'text-green' : 'text-cream-dim animate-pulse-glow'}`}
-                style={{ fontFamily: 'var(--font-pixel)' }}
-              >
-                {display.mlReady ? 'ML READY' : 'ML LOADING...'}
-              </span>
-            </div>
+            {/* Status */}
             <div className="volume-meter">
               {Array.from({ length: volumeBars }).map((_, i) => (
                 <div
