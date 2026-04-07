@@ -75,9 +75,9 @@ export default function ListenPage() {
     const rms = detector.getRMS();
     d.volume = Math.min(rms * 10, 1);
 
-    // Pitch detection
+    // Pitch detection (YIN confidence: 0-1, higher = more periodic)
     const pitch = detector.detectPitch();
-    if (pitch && pitch.confidence > 0.4) {
+    if (pitch && pitch.confidence > 0.5) {
       d.hasNote = true;
       d.noteName = midiToNoteName(pitch.midi);
       d.frequency = pitch.frequency;

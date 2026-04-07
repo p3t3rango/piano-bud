@@ -1,11 +1,11 @@
 // Pitch detection using Web Audio API
-// Autocorrelation for single-note, FFT peaks for chords
+// YIN-based autocorrelation for single-note, FFT chromagram for chords
 
 import { freqToNearestMidi, midiToPitchClass, midiToFreq } from '../music/theory';
 
-const FFT_SIZE = 8192; // Higher for better frequency resolution
-const MIN_FREQ = 55;  // ~A1
-const MAX_FREQ = 4200; // ~C8
+const FFT_SIZE = 4096;
+const MIN_FREQ = 65;   // ~C2 (lowest practical piano note for phone mic)
+const MAX_FREQ = 2100;  // ~C7 (avoid high-frequency noise false positives)
 
 export interface PitchResult {
   frequency: number;
@@ -14,10 +14,10 @@ export interface PitchResult {
 }
 
 export interface ChromaResult {
-  chroma: number[]; // 12-element array of pitch class energies
-  activePitchClasses: number[]; // Pitch classes above threshold
+  chroma: number[];
+  activePitchClasses: number[];
   dominantPitchClass: number;
-  rms: number; // Volume level
+  rms: number;
 }
 
 export class PitchDetector {
@@ -25,8 +25,8 @@ export class PitchDetector {
   private analyser: AnalyserNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private stream: MediaStream | null = null;
-  private timeDomainBuffer: Float32Array<ArrayBuffer> | null = null;
-  private frequencyBuffer: Float32Array<ArrayBuffer> | null = null;
+  private timeBuf: Float32Array<ArrayBuffer> | null = null;
+  private freqBuf: Float32Array<ArrayBuffer> | null = null;
   private running = false;
 
   private init(): void {
@@ -35,53 +35,32 @@ export class PitchDetector {
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = FFT_SIZE;
     this.analyser.smoothingTimeConstant = 0.8;
-    this.analyser.minDecibels = -90;
+    this.analyser.minDecibels = -80;
     this.analyser.maxDecibels = -10;
-
-    // Use a compressor to normalize levels without clipping
-    // This boosts quiet signals and tames loud ones
-    const compressor = this.audioCtx.createDynamicsCompressor();
-    compressor.threshold.value = -40;  // Start compressing at -40dB
-    compressor.knee.value = 20;
-    compressor.ratio.value = 8;
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.1;
-
-    // Gentle makeup gain (NOT 4x — that caused clipping)
-    const gain = this.audioCtx.createGain();
-    gain.gain.value = 1.5;
-
-    // Chain: source → compressor → gain → analyser
-    compressor.connect(gain);
-    gain.connect(this.analyser);
-    this._inputNode = compressor;
-
-    this.timeDomainBuffer = new Float32Array(FFT_SIZE);
-    this.frequencyBuffer = new Float32Array(this.analyser.frequencyBinCount);
+    this.timeBuf = new Float32Array(FFT_SIZE);
+    this.freqBuf = new Float32Array(this.analyser.frequencyBinCount);
   }
-
-  private _inputNode: AudioNode | null = null;
 
   async start(): Promise<void> {
     if (this.running) return;
-    // Init audio context synchronously in user gesture
     this.init();
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
-          autoGainControl: false,
+          autoGainControl: true, // Let the OS handle gain — avoids manual clipping issues
         },
       });
       this.source = this.audioCtx!.createMediaStreamSource(this.stream);
-      this.source.connect(this._inputNode!);
+      // Clean signal path: mic → analyser directly. No compressor, no gain.
+      this.source.connect(this.analyser!);
       if (this.audioCtx!.state === 'suspended') {
         await this.audioCtx!.resume();
       }
       this.running = true;
     } catch (err) {
-      console.error('Microphone access denied:', err);
+      console.error('Microphone access error:', err);
       throw err;
     }
   }
@@ -102,120 +81,151 @@ export class PitchDetector {
     return this.running;
   }
 
-  // Get RMS volume level (0-1)
-  getRMS(): number {
-    if (!this.analyser || !this.timeDomainBuffer) return 0;
-    this.analyser.getFloatTimeDomainData(this.timeDomainBuffer);
+  // Get RMS from already-read time domain buffer
+  private computeRMS(): number {
+    if (!this.timeBuf) return 0;
     let sum = 0;
-    for (let i = 0; i < this.timeDomainBuffer.length; i++) {
-      sum += this.timeDomainBuffer[i] * this.timeDomainBuffer[i];
+    for (let i = 0; i < this.timeBuf.length; i++) {
+      sum += this.timeBuf[i] * this.timeBuf[i];
     }
-    return Math.sqrt(sum / this.timeDomainBuffer.length);
+    return Math.sqrt(sum / this.timeBuf.length);
   }
 
-  // Detect single pitch using autocorrelation
+  // Public RMS that reads fresh data
+  getRMS(): number {
+    if (!this.analyser || !this.timeBuf) return 0;
+    this.analyser.getFloatTimeDomainData(this.timeBuf);
+    return this.computeRMS();
+  }
+
+  // YIN-based pitch detection
   detectPitch(): PitchResult | null {
-    if (!this.running || !this.analyser || !this.timeDomainBuffer || !this.audioCtx) return null;
+    if (!this.running || !this.analyser || !this.timeBuf || !this.audioCtx) return null;
 
-    this.analyser.getFloatTimeDomainData(this.timeDomainBuffer);
+    // Read time domain data ONCE — all analysis uses this same snapshot
+    this.analyser.getFloatTimeDomainData(this.timeBuf);
 
-    // Check if there's enough signal
-    const rms = this.getRMS();
-    if (rms < 0.005) return null;
+    const rms = this.computeRMS();
+    if (rms < 0.008) return null; // Silence gate
 
-    const sampleRate = this.audioCtx!.sampleRate;
-    const buf = this.timeDomainBuffer;
-    const n = buf.length;
+    const sampleRate = this.audioCtx.sampleRate;
+    const buf = this.timeBuf;
+    // Only use first half of buffer for autocorrelation (more stable)
+    const halfN = Math.floor(buf.length / 2);
 
-    // Autocorrelation
     const minPeriod = Math.floor(sampleRate / MAX_FREQ);
-    const maxPeriod = Math.floor(sampleRate / MIN_FREQ);
+    const maxPeriod = Math.min(Math.floor(sampleRate / MIN_FREQ), halfN);
 
-    // Normalized squared difference function (like YIN algorithm)
-    const nsdf = new Float32Array(maxPeriod + 1);
-    for (let tau = minPeriod; tau <= maxPeriod; tau++) {
-      let acf = 0;
-      let div = 0;
-      for (let i = 0; i < n - tau; i++) {
-        acf += buf[i] * buf[i + tau];
-        div += buf[i] * buf[i] + buf[i + tau] * buf[i + tau];
+    // YIN step 2: Difference function
+    const diff = new Float32Array(maxPeriod + 1);
+    for (let tau = 0; tau <= maxPeriod; tau++) {
+      let sum = 0;
+      for (let i = 0; i < halfN; i++) {
+        const d = buf[i] - buf[i + tau];
+        sum += d * d;
       }
-      nsdf[tau] = div > 0 ? 2 * acf / div : 0;
+      diff[tau] = sum;
     }
 
-    // Find the first peak above threshold
-    let bestTau = -1;
-    let bestVal = 0.35; // require decent confidence to avoid noise
-    let rising = false;
+    // YIN step 3: Cumulative mean normalized difference
+    const cmndf = new Float32Array(maxPeriod + 1);
+    cmndf[0] = 1;
+    let runningSum = 0;
+    for (let tau = 1; tau <= maxPeriod; tau++) {
+      runningSum += diff[tau];
+      cmndf[tau] = runningSum > 0 ? diff[tau] * tau / runningSum : 1;
+    }
 
-    for (let tau = minPeriod; tau <= maxPeriod; tau++) {
-      if (nsdf[tau] > nsdf[tau - 1]) {
-        rising = true;
-      } else if (rising && nsdf[tau] < nsdf[tau - 1]) {
-        // We just passed a peak
-        if (nsdf[tau - 1] > bestVal) {
-          bestVal = nsdf[tau - 1];
-          bestTau = tau - 1;
-          break; // Take the first good peak (fundamental)
+    // YIN step 4: Absolute threshold
+    // Find the first dip below threshold, then take the minimum in that valley
+    const yinThreshold = 0.15;
+    let bestTau = -1;
+
+    for (let tau = minPeriod; tau < maxPeriod; tau++) {
+      if (cmndf[tau] < yinThreshold) {
+        // Found a dip — walk forward to find the valley minimum
+        while (tau + 1 < maxPeriod && cmndf[tau + 1] < cmndf[tau]) {
+          tau++;
         }
-        rising = false;
+        bestTau = tau;
+        break;
       }
+    }
+
+    // Fallback: if no dip below threshold, find the global minimum in range
+    if (bestTau < 0) {
+      let minVal = Infinity;
+      for (let tau = minPeriod; tau <= maxPeriod; tau++) {
+        if (cmndf[tau] < minVal) {
+          minVal = cmndf[tau];
+          bestTau = tau;
+        }
+      }
+      // Only accept if reasonably periodic
+      if (minVal > 0.4) return null;
     }
 
     if (bestTau < 0) return null;
 
-    // Parabolic interpolation for sub-sample accuracy
-    const prev = nsdf[bestTau - 1] || 0;
-    const curr = nsdf[bestTau];
-    const next = nsdf[bestTau + 1] || 0;
-    const shift = (prev - next) / (2 * (prev - 2 * curr + next));
-    const refinedTau = bestTau + (isFinite(shift) ? shift : 0);
+    // YIN step 5: Parabolic interpolation for sub-sample accuracy
+    let refinedTau = bestTau;
+    if (bestTau > 0 && bestTau < maxPeriod) {
+      const s0 = cmndf[bestTau - 1];
+      const s1 = cmndf[bestTau];
+      const s2 = cmndf[bestTau + 1];
+      const denom = 2 * s1 - s2 - s0;
+      if (denom !== 0) {
+        refinedTau = bestTau + (s0 - s2) / (2 * denom);
+      }
+    }
 
     const frequency = sampleRate / refinedTau;
-    const midi = freqToNearestMidi(frequency);
 
-    return {
-      frequency,
-      midi,
-      confidence: bestVal,
-    };
+    // Sanity check
+    if (frequency < MIN_FREQ || frequency > MAX_FREQ) return null;
+
+    const midi = freqToNearestMidi(frequency);
+    const confidence = 1 - cmndf[bestTau]; // Higher = better (0 to 1)
+
+    return { frequency, midi, confidence };
   }
 
-  // Get chromagram from FFT data (for chord detection)
+  // Chromagram for chord detection
   getChroma(): ChromaResult {
-    if (!this.analyser || !this.frequencyBuffer || !this.audioCtx) {
+    if (!this.analyser || !this.freqBuf || !this.audioCtx) {
       return { chroma: new Array(12).fill(0), activePitchClasses: [], dominantPitchClass: 0, rms: 0 };
     }
-    this.analyser.getFloatFrequencyData(this.frequencyBuffer);
+
+    this.analyser.getFloatFrequencyData(this.freqBuf);
     const sampleRate = this.audioCtx.sampleRate;
     const binCount = this.analyser.frequencyBinCount;
+    const rms = this.computeRMS();
 
     const chroma = new Array(12).fill(0);
-    const rms = this.getRMS();
 
-    // Map each FFT bin to its pitch class and accumulate energy
     for (let i = 1; i < binCount; i++) {
       const freq = (i * sampleRate) / FFT_SIZE;
       if (freq < MIN_FREQ || freq > MAX_FREQ) continue;
 
-      // Convert dB to linear (frequencyBuffer is in dB)
-      const db = this.frequencyBuffer[i];
-      if (db < -70) continue; // Lower threshold for quiet signals
+      const db = this.freqBuf[i];
+      if (db < -65) continue;
 
-      const energy = Math.pow(10, db / 20);
+      // Convert dB to power (squared amplitude) for better dynamic range
+      const power = Math.pow(10, db / 10);
       const midi = freqToNearestMidi(freq);
       const pc = midiToPitchClass(midi);
 
-      // Weight lower harmonics more heavily
-      const midiExpected = midi;
-      const freqExpected = midiToFreq(midiExpected);
+      // Only count if close to a note center (within 40 cents)
+      const freqExpected = midiToFreq(midi);
       const centsDiff = Math.abs(1200 * Math.log2(freq / freqExpected));
-      if (centsDiff < 50) {
-        chroma[pc] += energy;
+      if (centsDiff < 40) {
+        // Weight by 1/harmonic_number to favor fundamentals over overtones
+        const harmonicWeight = MIN_FREQ / Math.max(freq, MIN_FREQ);
+        chroma[pc] += power * (1 + harmonicWeight);
       }
     }
 
-    // Normalize chroma
+    // Normalize
     const maxEnergy = Math.max(...chroma);
     if (maxEnergy > 0) {
       for (let i = 0; i < 12; i++) {
@@ -223,7 +233,6 @@ export class PitchDetector {
       }
     }
 
-    // Find active pitch classes (above threshold)
     const threshold = 0.25;
     const activePitchClasses = chroma
       .map((e, i) => ({ energy: e, pc: i }))
