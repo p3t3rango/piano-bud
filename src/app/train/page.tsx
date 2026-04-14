@@ -40,6 +40,13 @@ const EXERCISES = [
     color: 'purple',
     icon: '→',
   },
+  {
+    href: '/train/dictation',
+    title: 'Dictation',
+    desc: 'Transcribe a melody by tapping the keys',
+    color: 'teal',
+    icon: '✎',
+  },
 ];
 
 export default function TrainPage() {
