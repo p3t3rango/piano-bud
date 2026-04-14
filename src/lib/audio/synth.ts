@@ -10,9 +10,18 @@ export function getAudioContext(): AudioContext {
     audioCtx = new AudioContext();
   }
   if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+    audioCtx.resume().catch(err => {
+      console.warn('[audio] resume failed', err);
+    });
   }
   return audioCtx;
+}
+
+// True if audio has been successfully initialized. Call sites that want to
+// silently skip playback when audio is unavailable can check this after a
+// failed getAudioContext() call surfaces via the public functions.
+export function isAudioAvailable(): boolean {
+  return audioCtx !== null && audioCtx.state !== 'closed';
 }
 
 // Must be called synchronously from a user gesture (tap/click) on mobile

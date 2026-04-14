@@ -72,12 +72,53 @@ function defaultProgress(): ProgressData {
   };
 }
 
+function sanitizeStatsRecord(v: unknown): Record<string, ItemStats> {
+  if (!v || typeof v !== 'object') return {};
+  const out: Record<string, ItemStats> = {};
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const s = raw as Record<string, unknown>;
+    const correct = typeof s.correct === 'number' ? s.correct : 0;
+    const total = typeof s.total === 'number' ? s.total : 0;
+    if (total <= 0) continue;
+    out[key] = {
+      correct,
+      total,
+      lastSeen: typeof s.lastSeen === 'number' ? s.lastSeen : undefined,
+      streak: typeof s.streak === 'number' ? s.streak : undefined,
+    };
+  }
+  return out;
+}
+
+// Merge stored data with defaults so missing/newer fields don't crash the
+// app and corrupt individual fields get reset without nuking the whole
+// progress record.
+function mergeWithDefaults(raw: unknown): ProgressData {
+  const d = defaultProgress();
+  if (!raw || typeof raw !== 'object') return d;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.xp === 'number') d.xp = r.xp;
+  if (typeof r.level === 'number') d.level = r.level;
+  if (typeof r.streak === 'number') d.streak = r.streak;
+  if (typeof r.lastActiveDate === 'string') d.lastActiveDate = r.lastActiveDate;
+  if (typeof r.totalExercises === 'number') d.totalExercises = r.totalExercises;
+  if (typeof r.totalCorrect === 'number') d.totalCorrect = r.totalCorrect;
+  if (Array.isArray(r.history)) d.history = r.history.filter(h => h && typeof h === 'object') as ExerciseRecord[];
+  if (Array.isArray(r.dailyStats)) d.dailyStats = r.dailyStats.filter(s => s && typeof s === 'object') as DayStats[];
+  d.intervalAccuracy = sanitizeStatsRecord(r.intervalAccuracy);
+  d.chordAccuracy = sanitizeStatsRecord(r.chordAccuracy);
+  d.scaleAccuracy = sanitizeStatsRecord(r.scaleAccuracy);
+  d.progressionAccuracy = sanitizeStatsRecord(r.progressionAccuracy);
+  return d;
+}
+
 export function loadProgress(): ProgressData {
   if (typeof window === 'undefined') return defaultProgress();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultProgress();
-    return JSON.parse(raw);
+    return mergeWithDefaults(JSON.parse(raw));
   } catch {
     return defaultProgress();
   }
