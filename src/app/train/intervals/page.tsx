@@ -32,7 +32,7 @@ export default function IntervalTrainerPage() {
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [score, setScore] = useState({ correct: 0, total: 0 });
   const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
-  const [instrument, setInstrument] = useState<Instrument>('retro');
+  const [instrument, setInstrument] = useState<Instrument>('piano');
 
   const options = getIntervalsByDifficulty(difficulty).filter(i => i.semitones > 0);
 

@@ -1,5 +1,6 @@
 // Synthesizer with instrument selection and metronome sounds
 
+import { SplendidGrandPiano } from 'smplr';
 import { midiToFreq } from '../music/theory';
 
 let audioCtx: AudioContext | null = null;
@@ -25,6 +26,82 @@ export async function unlockAudio(): Promise<void> {
   source.buffer = buffer;
   source.connect(ctx.destination);
   source.start(0);
+  // Warm up sampled piano in the background on first user gesture so real
+  // piano samples are ready by the time the user presses Play.
+  preloadSampledPiano();
+}
+
+// ── Sampled piano (Salamander Grand via smplr) ──
+
+let sampledPiano: SplendidGrandPiano | null = null;
+let sampledPianoReady = false;
+let sampledPianoLoading = false;
+let sampledPianoProgress = 0;
+
+export interface PianoLoadState {
+  loading: boolean;
+  ready: boolean;
+  progress: number; // 0..1
+}
+
+type ProgressListener = (state: PianoLoadState) => void;
+const progressListeners = new Set<ProgressListener>();
+
+function emitProgress(): void {
+  const state: PianoLoadState = {
+    loading: sampledPianoLoading,
+    ready: sampledPianoReady,
+    progress: sampledPianoProgress,
+  };
+  for (const fn of progressListeners) fn(state);
+}
+
+export function onPianoLoadState(fn: ProgressListener): () => void {
+  progressListeners.add(fn);
+  fn({ loading: sampledPianoLoading, ready: sampledPianoReady, progress: sampledPianoProgress });
+  return () => progressListeners.delete(fn);
+}
+
+// Kick off sample loading (safe to call repeatedly — no-op after first call).
+// Returns immediately; listens via onPianoLoadState for completion.
+export function preloadSampledPiano(): void {
+  if (sampledPiano || sampledPianoLoading) return;
+  sampledPianoLoading = true;
+  emitProgress();
+  const ctx = getAudioContext();
+  const piano = new SplendidGrandPiano(ctx, {
+    onLoadProgress: ({ loaded, total }) => {
+      sampledPianoProgress = total > 0 ? loaded / total : 0;
+      emitProgress();
+    },
+  });
+  sampledPiano = piano;
+  piano.load
+    .then(() => {
+      sampledPianoReady = true;
+      sampledPianoLoading = false;
+      sampledPianoProgress = 1;
+      emitProgress();
+    })
+    .catch(err => {
+      console.warn('[piano] sampled piano failed to load, falling back to synth', err);
+      sampledPiano = null;
+      sampledPianoLoading = false;
+      emitProgress();
+    });
+}
+
+function playSampledPianoNote(midi: number, duration: number, volume: number): boolean {
+  if (!sampledPiano || !sampledPianoReady) return false;
+  try {
+    // volume 0..1 → velocity 0..127 (lightly boosted; clamped)
+    const velocity = Math.min(127, Math.max(1, Math.round(volume * 140)));
+    sampledPiano.start({ note: midi, velocity, duration });
+    return true;
+  } catch (err) {
+    console.warn('[piano] sampled playback failed', err);
+    return false;
+  }
 }
 
 // ── Instrument types ──
@@ -176,8 +253,12 @@ export function playNote(opts: NoteOptions): void {
     volume = 0.3,
   } = opts;
 
-  // Piano uses dedicated synthesis
+  // Piano: try sampled playback first; fall back to additive synth while
+  // samples are loading or if loading failed.
   if (instrument === 'piano') {
+    if (playSampledPianoNote(midi, duration, volume)) return;
+    // Kick off load on first use if not already started, but don't block.
+    if (!sampledPiano && !sampledPianoLoading) preloadSampledPiano();
     playPianoNote(midi, duration, volume);
     return;
   }
