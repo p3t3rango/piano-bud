@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { CHORD_TYPES, getChordsByDifficulty, type ChordDef } from '@/lib/music/chords';
-import { playChord, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
-import { recordExercise } from '@/lib/progress/store';
-import { pitchClassName, NOTE_NAMES } from '@/lib/music/theory';
+import { getChordsByDifficulty, type ChordDef } from '@/lib/music/chords';
+import { playChord, unlockAudio } from '@/lib/audio/synth';
+import { pitchClassName } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
+import InstrumentSelector from '@/components/InstrumentSelector';
+import { useExerciseState } from '@/lib/hooks/useExerciseState';
 
 type Difficulty = 1 | 2 | 3;
 
@@ -28,11 +29,8 @@ function generateQuestion(difficulty: Difficulty): Question {
 export default function ChordTrainerPage() {
   const [difficulty, setDifficulty] = useState<Difficulty>(1);
   const [question, setQuestion] = useState<Question | null>(null);
-  const [answered, setAnswered] = useState(false);
-  const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
-  const [score, setScore] = useState({ correct: 0, total: 0 });
-  const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
-  const [instrument, setInstrument] = useState<Instrument>('piano');
+  const { answered, selectedAnswer, score, feedback, instrument, setInstrument,
+          submitAnswer, resetForNext, restart: restartScore } = useExerciseState<string>('chord');
 
   const options = getChordsByDifficulty(difficulty);
 
@@ -40,38 +38,19 @@ export default function ChordTrainerPage() {
     unlockAudio();
     const q = generateQuestion(difficulty);
     setQuestion(q);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
+    resetForNext();
     playChord(q.midiNotes, 1.5, instrument);
-  }, [difficulty, instrument]);
+  }, [difficulty, instrument, resetForNext]);
 
   const restart = () => {
-    setScore({ correct: 0, total: 0 });
+    restartScore();
     setQuestion(null);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
   };
 
   const handleAnswer = (shortName: string) => {
     if (answered || !question) return;
-    setAnswered(true);
-    setSelectedAnswer(shortName);
-
     const correct = shortName === question.chordType.shortName;
-    if (correct) {
-      playSfx('correct');
-    } else {
-      playSfx('incorrect');
-    }
-
-    const result = recordExercise('chord', question.chordType.name, correct);
-    setFeedback({ xp: result.xpGained, levelUp: result.leveledUp });
-    setScore(prev => ({
-      correct: prev.correct + (correct ? 1 : 0),
-      total: prev.total + 1,
-    }));
+    submitAnswer(shortName, correct, question.chordType.name);
   };
 
   const replayQuestion = () => {
@@ -98,11 +77,7 @@ export default function ChordTrainerPage() {
         ))}
       </div>
       <div className="flex gap-2 flex-wrap justify-center items-center">
-        {INSTRUMENTS.map(inst => (
-          <button key={inst.id} onClick={() => setInstrument(inst.id)}
-            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
-          >{inst.label}</button>
-        ))}
+        <InstrumentSelector value={instrument} onChange={setInstrument} />
         {score.total > 0 && <button onClick={restart} className="badge badge-hard">Restart</button>}
       </div>
 

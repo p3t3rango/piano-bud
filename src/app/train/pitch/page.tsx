@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { playNote, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
-import { recordExercise } from '@/lib/progress/store';
+import { playNote, unlockAudio } from '@/lib/audio/synth';
 import { midiToNoteName, NOTE_NAMES } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
+import InstrumentSelector from '@/components/InstrumentSelector';
+import { useExerciseState } from '@/lib/hooks/useExerciseState';
 
 type Difficulty = 1 | 2 | 3;
-type Mode = 'identify' | 'match';
 
 // Difficulty ranges
 // Easy: white notes only (C, D, E, F, G, A, B) in one octave
@@ -59,14 +59,10 @@ function getNoteNameOptions(difficulty: Difficulty): { midi: number; name: strin
 
 export default function PitchTrainerPage() {
   const [difficulty, setDifficulty] = useState<Difficulty>(1);
-  const [mode, setMode] = useState<Mode>('identify');
-  const [instrument, setInstrument] = useState<Instrument>('piano');
   const [targetMidi, setTargetMidi] = useState<number | null>(null);
-  const [answered, setAnswered] = useState(false);
-  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-  const [score, setScore] = useState({ correct: 0, total: 0 });
-  const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
   const [playCount, setPlayCount] = useState(0);
+  const { answered, selectedAnswer, score, feedback, instrument, setInstrument,
+          submitAnswer, resetForNext, restart: restartScore } = useExerciseState<number>('interval');
 
   const options = getNoteNameOptions(difficulty);
 
@@ -74,12 +70,10 @@ export default function PitchTrainerPage() {
     unlockAudio();
     const midi = generateNote(difficulty);
     setTargetMidi(midi);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
+    resetForNext();
     setPlayCount(1);
     playNote({ midi, duration: 1.5, instrument, volume: 0.35 });
-  }, [difficulty, instrument]);
+  }, [difficulty, instrument, resetForNext]);
 
   const replay = () => {
     if (!targetMidi) return;
@@ -89,22 +83,12 @@ export default function PitchTrainerPage() {
 
   const handleAnswer = (answerMidi: number) => {
     if (answered || targetMidi === null) return;
-    setAnswered(true);
-    setSelectedAnswer(answerMidi);
-
     // For hard mode (2 octaves), match by pitch class since options only show pitch classes
     const correct = difficulty === 3
       ? (answerMidi % 12) === (targetMidi % 12)
       : answerMidi === targetMidi;
 
-    playSfx(correct ? 'correct' : 'incorrect');
-
-    const result = recordExercise('interval', `pitch:${midiToNoteName(targetMidi)}`, correct);
-    setFeedback({ xp: result.xpGained, levelUp: result.leveledUp });
-    setScore(prev => ({
-      correct: prev.correct + (correct ? 1 : 0),
-      total: prev.total + 1,
-    }));
+    submitAnswer(answerMidi, correct, `pitch:${midiToNoteName(targetMidi)}`);
 
     // Play the correct note if wrong
     if (!correct) {
@@ -115,11 +99,8 @@ export default function PitchTrainerPage() {
   };
 
   const restart = () => {
-    setScore({ correct: 0, total: 0 });
+    restartScore();
     setTargetMidi(null);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
   };
 
   return (
@@ -143,15 +124,7 @@ export default function PitchTrainerPage() {
 
       {/* Instrument & restart */}
       <div className="flex gap-2 flex-wrap justify-center items-center">
-        {INSTRUMENTS.map(inst => (
-          <button
-            key={inst.id}
-            onClick={() => setInstrument(inst.id)}
-            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
-          >
-            {inst.label}
-          </button>
-        ))}
+        <InstrumentSelector value={instrument} onChange={setInstrument} />
         {score.total > 0 && (
           <button onClick={restart} className="badge badge-hard">
             Restart

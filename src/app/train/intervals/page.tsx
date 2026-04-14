@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { INTERVALS, getIntervalsByDifficulty, type IntervalDef } from '@/lib/music/intervals';
-import { playInterval, playSfx, unlockAudio, INSTRUMENTS, type Instrument } from '@/lib/audio/synth';
-import { recordExercise } from '@/lib/progress/store';
+import { getIntervalsByDifficulty, type IntervalDef } from '@/lib/music/intervals';
+import { playInterval, unlockAudio } from '@/lib/audio/synth';
 import { midiToNoteName } from '@/lib/music/theory';
 import PianoKeyboard from '@/components/PianoKeyboard';
+import InstrumentSelector from '@/components/InstrumentSelector';
+import { useExerciseState } from '@/lib/hooks/useExerciseState';
 
 type Difficulty = 1 | 2 | 3;
 type PlayMode = 'melodic' | 'harmonic';
@@ -28,11 +29,9 @@ export default function IntervalTrainerPage() {
   const [difficulty, setDifficulty] = useState<Difficulty>(1);
   const [playMode, setPlayMode] = useState<PlayMode>('melodic');
   const [question, setQuestion] = useState<Question | null>(null);
-  const [answered, setAnswered] = useState(false);
-  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-  const [score, setScore] = useState({ correct: 0, total: 0 });
-  const [feedback, setFeedback] = useState<{ xp: number; levelUp: boolean } | null>(null);
-  const [instrument, setInstrument] = useState<Instrument>('piano');
+  const ex = useExerciseState<number>('interval');
+  const { answered, selectedAnswer, score, feedback, instrument, setInstrument,
+          submitAnswer, resetForNext, restart: restartScore } = ex;
 
   const options = getIntervalsByDifficulty(difficulty).filter(i => i.semitones > 0);
 
@@ -40,34 +39,19 @@ export default function IntervalTrainerPage() {
     unlockAudio();
     const q = generateQuestion(difficulty, playMode);
     setQuestion(q);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
+    resetForNext();
     playInterval(q.rootMidi, q.interval.semitones, q.mode, instrument);
-  }, [difficulty, playMode, instrument]);
+  }, [difficulty, playMode, instrument, resetForNext]);
 
   const restart = () => {
-    setScore({ correct: 0, total: 0 });
+    restartScore();
     setQuestion(null);
-    setAnswered(false);
-    setSelectedAnswer(null);
-    setFeedback(null);
   };
 
   const handleAnswer = (semitones: number) => {
     if (answered || !question) return;
-    setAnswered(true);
-    setSelectedAnswer(semitones);
-
     const correct = semitones === question.interval.semitones;
-    playSfx(correct ? 'correct' : 'incorrect');
-
-    const result = recordExercise('interval', question.interval.name, correct);
-    setFeedback({ xp: result.xpGained, levelUp: result.leveledUp });
-    setScore(prev => ({
-      correct: prev.correct + (correct ? 1 : 0),
-      total: prev.total + 1,
-    }));
+    submitAnswer(semitones, correct, question.interval.name);
   };
 
   const replayQuestion = () => {
@@ -106,15 +90,7 @@ export default function IntervalTrainerPage() {
 
       {/* Instrument & restart */}
       <div className="flex gap-2 flex-wrap justify-center items-center">
-        {INSTRUMENTS.map(inst => (
-          <button
-            key={inst.id}
-            onClick={() => setInstrument(inst.id)}
-            className={`badge ${instrument === inst.id ? 'badge-medium ring-1 ring-current' : 'badge-medium opacity-50'}`}
-          >
-            {inst.label}
-          </button>
-        ))}
+        <InstrumentSelector value={instrument} onChange={setInstrument} />
         {score.total > 0 && (
           <button onClick={restart} className="badge badge-hard">
             Restart
